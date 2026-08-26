@@ -8,7 +8,7 @@ This repository contains the `otter-chess` Python package, which exposes a clean
 [![Python](https://img.shields.io/pypi/pyversions/otter-chess)](https://pypi.org/project/otter-chess/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-- **[Play in your browser](https://peargentlabs.github.io/Otter-Chess/play/)** — run the model client-side with WebGPU
+- **[Play in your browser](https://peargentlabs.github.io/otter-chess/play/)** — run the model client-side with WebGPU
 - **[Paper](https://arxiv.org/abs/2608.05206)** — architecture, training, and evaluation details
 - **[Model weights](https://huggingface.co/peargentlabs/otter-chess)** — `model.safetensors` and the ONNX export, on Hugging Face
 - **[PyPI package](https://pypi.org/project/otter-chess/)** — `pip install otter-chess`
