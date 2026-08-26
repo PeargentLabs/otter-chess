@@ -209,7 +209,36 @@ export const formatClock = (totalSeconds: number): string => {
 };
 
 // Helper to compute expected human think time based on predictions, clock, and TC
-export const getExpectedHumanTime = (preds: PredictedMove[], tcStr: string, timeLeft: number): number => {
+//
+// Modelled on how a human actually spends clock, which is *not* simply "the
+// flatter the engine's move distribution, the longer the think":
+//
+//  - Opening moves come out of memory, not calculation. Book positions have
+//    the flattest distributions in the whole game (e4/d4/Nf3/c4 are all
+//    perfectly normal), so raw distribution entropy rates them as maximally
+//    hard exactly where a human is fastest. `openingFactor` damps the first
+//    few plies hard and ramps back to full by roughly move 10.
+//  - Forced positions are instant regardless of entropy. A single legal reply,
+//    a recapture, or a check evasion gets played without thought, so a low
+//    legal-move count collapses the estimate.
+//  - Time pressure speeds humans up, but only once it actually bites. The
+//    clock term stays neutral for most of the game and only accelerates below
+//    ~35% remaining, rather than making the *opening* the slowest phase (which
+//    a plain timeLeft/baseSec ratio does, since it peaks at 1.0 on move 1).
+//  - Nobody sinks an unbounded share of their remaining clock into one move,
+//    hence the cap.
+//
+// `ply` is the number of half-moves already played (i.e. the history length
+// before this move) and `legalMoveCount` the number of legal moves available
+// in the position. Both are optional: omitted, they degrade to neutral so
+// callers without a position handy still get a sane number.
+export const getExpectedHumanTime = (
+  preds: PredictedMove[],
+  tcStr: string,
+  timeLeft: number,
+  ply: number = 0,
+  legalMoveCount: number = 0,
+): number => {
   if (!preds || preds.length === 0) return 3.0;
 
   const p1 = preds[0].probability;
@@ -221,11 +250,38 @@ export const getExpectedHumanTime = (preds: PredictedMove[], tcStr: string, time
   const difficulty = 1.0 - (diff * 0.5 + p1 * 0.5);
 
   const baseSec = getBaseSeconds(tcStr);
-  const scale = Math.max(5, baseSec * 0.05); // e.g. 30s max for Rapid
+  // 0.04 rather than 0.05: the clock term below no longer tapers through the
+  // midgame, so trimming the scale keeps peak midgame thinks about where they
+  // were instead of inflating them.
+  const scale = Math.max(5, baseSec * 0.04); // e.g. 24s max for Rapid
 
-  // Remaining clock scale: humans play faster as clock runs down
-  const clockFactor = baseSec > 0 ? Math.max(0.1, timeLeft / baseSec) : 1.0;
+  // Remaining clock scale: neutral until the clock genuinely bites, then a
+  // steepening speed-up into the scramble.
+  const clockRatio = baseSec > 0 ? timeLeft / baseSec : 1.0;
+  const clockFactor = clockRatio >= 0.5 ? 1.0 : Math.max(0.08, clockRatio / 0.5);
 
-  const estimated = 1.0 + difficulty * scale * clockFactor;
-  return Math.round(estimated * 10) / 10; // 1 decimal place
+  // Book/opening damping: near-instant for the first few plies, easing back to
+  // a full-length think by ~ply 20.
+  const openingFactor = Math.min(1, 0.03 + Math.pow(Math.max(0, ply - 4) / 16, 1.5));
+
+  // Forced-move damping. 0 means "caller didn't say", so stay neutral.
+  const forcedFactor =
+    legalMoveCount <= 0 ? 1.0
+      : legalMoveCount === 1 ? 0.05
+      : legalMoveCount === 2 ? 0.25
+      : legalMoveCount <= 4 ? 0.35
+      : legalMoveCount <= 8 ? 0.8
+      : 1.0;
+
+  const raw = 0.4 + difficulty * scale * clockFactor;
+  const estimated = raw * openingFactor * forcedFactor;
+
+  // Never burn an unbounded share of what's left on a single move. 6% is what
+  // keeps Otter from flagging itself in the pathological case where every
+  // position in a long game reads as maximally murky — the old formula got
+  // that for free from its linearly-decaying clock term, which this one
+  // deliberately doesn't have.
+  const cap = Math.max(0.3, timeLeft * 0.06);
+
+  return Math.max(0.1, Math.round(Math.min(estimated, cap) * 10) / 10);
 };

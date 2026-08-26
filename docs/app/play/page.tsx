@@ -369,8 +369,20 @@ export default function PlayPage() {
 
           if (inferenceResult && inferenceResult.length > 0) {
             const bestMove = inferenceResult[0].move;
-            const delaySec = getExpectedHumanTime(inferenceResult, timeControl, otterTime);
-            const thinkingDelay = thinkingMode === 'human' ? delaySec * 1000 : 50;
+            const delaySec = getExpectedHumanTime(
+              inferenceResult,
+              timeControl,
+              otterTime,
+              currentMoves.length,
+              game.moves().length,
+            );
+            // Humans don't move on a metronome, and they can't physically move
+            // a piece instantly either — scatter the estimate, then floor it.
+            const jitter = 0.8 + Math.random() * 0.45;
+            const minimumDelayMs = 200 + Math.random() * 100;
+            const thinkingDelay = thinkingMode === 'human'
+              ? Math.max(delaySec * 1000 * jitter, minimumDelayMs)
+              : 50;
 
             setTimeout(() => {
               // Re-check right before applying too — the position could have

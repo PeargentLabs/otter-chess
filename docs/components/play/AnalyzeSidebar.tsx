@@ -232,7 +232,13 @@ export default function AnalyzeSidebar({
           <div className="col-span-2 p-1.5 border border-line bg-bg rounded-[3px] flex justify-between items-center text-[11.5px]">
             <div className="text-muted uppercase font-bold">Est. Human Think Time</div>
             <div className="font-bold text-pear">
-              {getExpectedHumanTime(topMoves, timeFormatToTc(analyzeTimeFormat), game?.turn() === 'w' ? analyzeWhiteTime : analyzeBlackTime)}s
+              {getExpectedHumanTime(
+                topMoves,
+                timeFormatToTc(analyzeTimeFormat),
+                game?.turn() === 'w' ? analyzeWhiteTime : analyzeBlackTime,
+                game?.history().length ?? 0,
+                game?.moves().length ?? 0,
+              )}s
             </div>
           </div>
         </div>
