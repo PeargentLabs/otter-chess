@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "!docs/standings-proxy/**"
       - ".github/workflows/deploy-docs.yml"
   # Allows a manual redeploy from the Actions tab.
   workflow_dispatch:
@@ -50,6 +51,11 @@ jobs:
         env:
           NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
           NEXT_PUBLIC_SITE_URL: ${{ steps.pages.outputs.base_url }}
+          # Unset until standings-proxy/ has been deployed once (see its
+          # README) — the Olympiad lobby degrades to a chess-results.com
+          # link when this is empty, so leaving it unset never breaks the
+          # build or the page.
+          NEXT_PUBLIC_STANDINGS_PROXY_URL: ${{ vars.STANDINGS_PROXY_URL }}
         run: npm run build
 
       # Belt and braces: the Actions deploy path doesn't run Jekyll, but if it

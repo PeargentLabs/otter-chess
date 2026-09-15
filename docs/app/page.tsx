@@ -51,6 +51,31 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* Olympiad promo banner — desktop/tablet only; the site-wide top
+          banner (OlympiadTopBanner, right below the header) already covers
+          this on mobile, so showing both there was redundant. */}
+      <section className="hidden sm:block max-w-[1200px] mx-auto w-full px-6 sm:px-10 lg:px-[56px] pb-14 sm:pb-20 lg:pb-[90px]">
+        <Link
+          href="/olympiad"
+          className="group flex flex-col sm:flex-row sm:items-center justify-between gap-5 sm:gap-8 rounded-sm border border-pear-dim/60 bg-pear-tint/10 hover:border-pear hover:bg-pear-tint/20 transition-all duration-150 px-6 sm:px-8 py-6 sm:py-7"
+        >
+          <div className="flex items-center gap-3.5 min-w-0">
+            <span className="w-2 h-2 rounded-full bg-pear animate-pulse shrink-0" />
+            <div className="min-w-0">
+              <div className="font-mono text-[11px] text-pear uppercase tracking-[0.08em] font-bold mb-[6px]">
+                FIDE Chess Olympiad · Samarkand 2026
+              </div>
+              <div className="font-space font-medium text-[19px] sm:text-[21px] text-paper leading-tight">
+                Check out Olympiad games with human-like analysis
+              </div>
+            </div>
+          </div>
+          <span className="shrink-0 font-mono text-[13px] tracking-[0.01em] py-[13px] px-[24px] bg-paper text-bg group-hover:bg-pear-deep transition-all duration-150 flex items-center gap-[8px] self-start sm:self-auto">
+            Stream Games →
+          </span>
+        </Link>
+      </section>
+
       {/* Block A2 — What Otter does */}
       <section className="max-w-[1200px] mx-auto w-full px-6 sm:px-10 lg:px-[56px] py-12 sm:py-16 lg:py-[76px] border-t border-line">
         <div className="font-mono text-[11.5px] text-muted tracking-[0.05em] mb-[18px]">

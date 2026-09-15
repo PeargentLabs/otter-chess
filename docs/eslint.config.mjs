@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Standalone Cloudflare Worker script, not part of the Next.js app.
+    "standings-proxy/**",
   ]),
 ]);
 

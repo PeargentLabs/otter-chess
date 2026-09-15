@@ -4,6 +4,17 @@
 import { Chess } from 'chess.js';
 import type { PredictedMove } from './types';
 
+// Chessground arrow-brush colors, shared by every board that draws Otter/
+// Stockfish/played-move arrows (currently /play's Analyze mode and
+// /olympiad's main board) so there's one place to change them instead of
+// duplicated hex literals in each board's Chessground init and each
+// sidebar's arrow-colour legend.
+export const ARROW_BRUSH_COLORS = {
+  otter: '#5C8A2E',
+  stockfish: '#F0605F',
+  played: '#EAB308',
+} as const;
+
 // Convert FEN string to 8x8 pieces grid (row 0 is Rank 8, col 0 is File a)
 export const fenToGrid = (fen: string): string[][] => {
   const grid: string[][] = Array(8).fill(null).map(() => Array(8).fill(""));

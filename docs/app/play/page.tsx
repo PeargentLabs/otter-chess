@@ -24,6 +24,7 @@ import {
   getIncrementSeconds,
   getExpectedHumanTime,
   timeFormatToTc,
+  ARROW_BRUSH_COLORS,
 } from '@/lib/play/chess-utils';
 import { useStockfish } from '@/hooks/play/useStockfish';
 import { useOtterWorker } from '@/hooks/play/useOtterWorker';
@@ -916,9 +917,9 @@ export default function PlayPage() {
           // the player's actual move (when reviewing a finished/loaded
           // game) in yellow.
           brushes: {
-            otter: { key: 'otter', color: '#5C8A2E', opacity: 1, lineWidth: 10 },
-            stockfish: { key: 'stockfish', color: '#F0605F', opacity: 1, lineWidth: 10 },
-            played: { key: 'played', color: '#EAB308', opacity: 1, lineWidth: 10 },
+            otter: { key: 'otter', color: ARROW_BRUSH_COLORS.otter, opacity: 1, lineWidth: 10 },
+            stockfish: { key: 'stockfish', color: ARROW_BRUSH_COLORS.stockfish, opacity: 1, lineWidth: 10 },
+            played: { key: 'played', color: ARROW_BRUSH_COLORS.played, opacity: 1, lineWidth: 10 },
           } as Partial<DrawBrushes> as DrawBrushes,
         }
       });

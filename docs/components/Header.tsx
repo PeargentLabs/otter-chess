@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 
 export default function Header() {
   const pathname = usePathname();
-  const activeTab = pathname === '/docs' ? 'docs' : pathname === '/play' ? 'play' : 'home';
+  const activeTab = pathname === '/docs' ? 'docs' : pathname === '/olympiad' ? 'olympiad' : pathname === '/play' ? 'play' : 'home';
 
   return (
     <header className="sticky top-0 z-40 bg-bg flex items-center justify-between shrink-0 px-4 sm:px-8 h-[68px] border-b border-line">
@@ -40,6 +40,15 @@ export default function Header() {
           }`}
         >
           Docs
+        </Link>
+
+        <Link
+          href="/olympiad"
+          className={`font-mono text-[13px] tracking-[0.01em] transition-all duration-150 ${
+            activeTab === 'olympiad' ? 'text-paper font-medium' : 'text-muted hover:text-paper'
+          }`}
+        >
+          Olympiad
         </Link>
 
         <Link
