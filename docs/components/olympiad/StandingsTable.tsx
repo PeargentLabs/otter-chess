@@ -9,6 +9,12 @@ import { teamFlagUrl } from '@/lib/olympiad/flags';
 // only by game points rather than the full Sonneborn-Berger/Buchholz
 // system FIDE uses, so it's flagged as computed rather than official, with
 // a link to the real thing alongside it.
+//
+// A row's `estimated` flag (see lib/olympiad/standings-estimate.ts) means
+// its current-round points came from our own live board results, not the
+// official snapshot yet — the official source (chess-results.com, and the
+// Lichess standings endpoint that's usually ahead of it) can lag hours
+// behind the actual games finishing.
 export default function StandingsTable({
   title,
   standings,
@@ -16,10 +22,11 @@ export default function StandingsTable({
   officialUrl,
 }: {
   title: string;
-  standings: TeamStanding[] | null;
+  standings: (TeamStanding & { estimated?: boolean })[] | null;
   loading: boolean;
   officialUrl: string | null;
 }) {
+  const hasEstimates = !!standings?.some((t) => t.estimated);
   return (
     <div className="flex-1 min-w-0 border border-line rounded-[3px] overflow-hidden">
       <div className="p-3 px-4 bg-panel/40 border-b border-line flex items-center justify-between gap-2">
@@ -58,6 +65,12 @@ export default function StandingsTable({
                         <span className="flex items-center gap-1.5 min-w-0">
                           {flagUrl && <img src={flagUrl} alt="" className="w-4 h-3 object-cover rounded-[1px] shrink-0" />}
                           <span className="truncate">{team.name}</span>
+                          {team.estimated && (
+                            <span
+                              className="shrink-0 w-1.5 h-1.5 rounded-full bg-pear animate-pulse"
+                              title="Includes this round's live results — not yet in the official standings"
+                            />
+                          )}
                         </span>
                       </td>
                       <td className="py-1.5 px-3 text-right text-pear font-bold">{team.mp}</td>
@@ -69,7 +82,9 @@ export default function StandingsTable({
             </table>
           </div>
           <div className="px-4 py-2 border-t border-line/60 text-[9.5px] text-muted font-mono">
-            Computed from live results — official tie-breaks may differ slightly.
+            {hasEstimates
+              ? <>Computed from live results — <span className="text-pear">&bull;</span> marks a team whose current round isn&apos;t official yet. Official tie-breaks may differ slightly.</>
+              : 'Computed from live results — official tie-breaks may differ slightly.'}
           </div>
         </>
       ) : (

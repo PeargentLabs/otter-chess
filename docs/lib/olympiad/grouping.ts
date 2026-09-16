@@ -2,6 +2,7 @@
 // round is team Swiss, so every board sharing the same two teams (in
 // either colour) belongs to the same match.
 
+import { WOMENS_TOURNAMENT_IDS } from './config';
 import type { OlympiadGame, TeamPairing } from './types';
 
 export function groupIntoPairings(games: OlympiadGame[]): TeamPairing[] {
@@ -12,8 +13,13 @@ export function groupIntoPairings(games: OlympiadGame[]): TeamPairing[] {
     const black = game.blackTeam || 'Unknown';
     // Unordered pair key, so a board with the teams' colours swapped
     // (happens across rounds, or between two same-broadcast entries) still
-    // lands in the same pairing card.
-    const key = [white, black].sort().join(' vs ');
+    // lands in the same pairing card. Section-prefixed — the same two
+    // countries can face each other in Open AND Women's in the same round
+    // (independent Swiss pairings per section), and without this a caller
+    // viewing "All" would merge both into one card showing up to 8 boards
+    // for what's actually two separate matches.
+    const section = WOMENS_TOURNAMENT_IDS.includes(game.tournamentId) ? 'women' : 'open';
+    const key = `${section}:${[white, black].sort().join(' vs ')}`;
 
     const existing = byKey.get(key);
     if (existing) {

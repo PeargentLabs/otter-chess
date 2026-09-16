@@ -5,14 +5,15 @@ import { useSearchParams } from 'next/navigation';
 import { Chess } from 'chess.js';
 import type { Square } from 'chess.js';
 import type { PredictedMove } from '@/lib/play/types';
-import { boardToTensor, mirrorMove, mirrorSquare } from '@/lib/play/chess-utils';
+import { boardToTensor, mirrorMove, mirrorSquare, withOppositeTurn } from '@/lib/play/chess-utils';
 import { useStockfish } from '@/hooks/play/useStockfish';
 import { useOtterWorker } from '@/hooks/play/useOtterWorker';
 import { useRatingCurve } from '@/hooks/play/useRatingCurve';
 import { useOlympiadSection } from '@/hooks/olympiad/useOlympiadSection';
 import { useFocusedGame } from '@/hooks/olympiad/useFocusedGame';
 import { useTickingClock } from '@/hooks/olympiad/useTickingClock';
-import { OPEN_TOURNAMENT_IDS, WOMENS_TOURNAMENT_IDS, OLYMPIAD_TOURNAMENT_NAME } from '@/lib/olympiad/config';
+import { OPEN_TOURNAMENT_IDS, WOMENS_TOURNAMENT_IDS, ALL_TOURNAMENT_IDS, OLYMPIAD_TOURNAMENT_NAME } from '@/lib/olympiad/config';
+import { readSavedTeam, writeSavedSection, writeSavedTeam } from '@/lib/olympiad/filter-prefs';
 import { groupIntoPairings, uniqueTeams } from '@/lib/olympiad/grouping';
 import { DEMO_GAMES } from '@/lib/olympiad/demo-data';
 import MainBoard from '@/components/olympiad/MainBoard';
@@ -68,25 +69,85 @@ function OlympiadWatchPageInner() {
   const focusParam = searchParams.get('focus');
   const roundNumber = roundParam ? parseInt(roundParam, 10) : undefined;
 
-  const [section, setSection] = useState<OlympiadSection>(isValidSection(sectionParam) ? sectionParam : 'open');
-  const [selectedTeam, setSelectedTeam] = useState<string | null>(null);
+  const [section, setSectionState] = useState<OlympiadSection>(isValidSection(sectionParam) ? sectionParam : 'all');
+  // Starts at null (not the lobby's default) purely so the mount effect
+  // below can tell "not read from storage yet" apart from an explicit
+  // "All Teams" — it's overwritten within the same first effect pass,
+  // before anything renders using it as a real value.
+  const [selectedTeam, setSelectedTeamState] = useState<string | null>(null);
   // Explicitly clicked (or deep-linked) board, if any — otherwise the page
   // defaults to the first board of the first (or selected-team's) pairing.
   const [focusedBoardKey, setFocusedBoardKey] = useState<string | null>(focusParam);
 
-  const tournamentIds = useMemo(() => {
+  // setSection/setSelectedTeam (used by the SectionToggle/TeamDropdown
+  // widgets below) persist every user-driven change, so it carries back to
+  // the lobby too. The URL-sync and storage-read effects below call the
+  // raw ...State setters directly instead — they're resolving "what does
+  // the URL/storage say right now", not a deliberate filter change, and
+  // persisting THEM would re-write a just-read value on top of itself (or
+  // worse, stomp a real preference with a stale one) before the very
+  // re-render that would have shown it.
+  const setSection = (s: OlympiadSection) => { setSectionState(s); writeSavedSection(s); };
+  const setSelectedTeam = (t: string | null) => { setSelectedTeamState(t); writeSavedTeam(t); };
+
+  // A useState initializer only runs on the very first mount — but a
+  // second click from the lobby lands on this SAME route (just a new
+  // ?focus=/&section= query), and Next's client-side router reuses the
+  // already-mounted page instead of remounting it. Without this, the URL
+  // would change but `section`/`focusedBoardKey` wouldn't, so a second
+  // clicked game just kept showing whichever game was focused before —
+  // this keeps them synced to the URL on every navigation, not just the
+  // first.
+  useEffect(() => {
+    setFocusedBoardKey(focusParam);
+  }, [focusParam]);
+  useEffect(() => {
+    if (isValidSection(sectionParam)) setSectionState(sectionParam);
+  }, [sectionParam]);
+  // The lobby's team filter carries over here (no ?team= URL plumbing
+  // needed) since both pages read/write the same stored preference —
+  // picking India in the lobby and clicking into a game means this page's
+  // own team dropdown starts on India too, instead of resetting to "All
+  // Teams" the way it used to.
+  useEffect(() => {
+    setSelectedTeamState(readSavedTeam());
+  }, []);
+
+  // What to POLL — always every sub-broadcast across both sections, unless
+  // a single tournament is explicitly overridden via ?tournament=, or demo
+  // mode needs no network at all. Polling everything regardless of the
+  // section toggle means switching it is a free client-side filter below,
+  // never a teardown-and-refetch of a whole new tournament set.
+  const pollIds = useMemo(() => {
     if (isDemo) return [];
     if (tournamentOverride) return [tournamentOverride];
-    if (section === 'open') return OPEN_TOURNAMENT_IDS;
-    if (section === 'women') return WOMENS_TOURNAMENT_IDS;
-    return [...OPEN_TOURNAMENT_IDS, ...WOMENS_TOURNAMENT_IDS];
-  }, [isDemo, tournamentOverride, section]);
+    return ALL_TOURNAMENT_IDS;
+  }, [isDemo, tournamentOverride]);
 
-  const { games: liveGames, roundName, loading: gamesLoading, error: gamesError } = useOlympiadSection(tournamentIds, roundNumber);
+  const { games: liveGames, gamesByTournamentId, asOfByTournamentId, roundName, loading: gamesLoading, error: gamesError } = useOlympiadSection(pollIds, roundNumber);
   // ?demo=1 also feeds the mini-board strip / team dropdown / section
   // toggle from lib/olympiad/demo-data.ts's several dummy pairings, so
   // that part of the design is reviewable with no network dependency too.
-  const games = isDemo ? DEMO_GAMES : liveGames;
+  //
+  // This is every currently polled game regardless of which section is
+  // displayed — a deep link (a click from the lobby, or ?focus= in the
+  // URL) resolves against this full set below, not just whichever
+  // section's boards are on screen right now.
+  const allGames = isDemo ? DEMO_GAMES : liveGames;
+
+  // What to DISPLAY — the mini-board strip / team dropdown / pairings are
+  // scoped to just the active section (or the single overridden tournament).
+  const sectionIds = useMemo(() => {
+    if (tournamentOverride) return [tournamentOverride];
+    if (section === 'open') return OPEN_TOURNAMENT_IDS;
+    if (section === 'women') return WOMENS_TOURNAMENT_IDS;
+    return ALL_TOURNAMENT_IDS;
+  }, [tournamentOverride, section]);
+
+  const games = useMemo(
+    () => (isDemo ? DEMO_GAMES : sectionIds.flatMap((id) => gamesByTournamentId.get(id) ?? [])),
+    [isDemo, sectionIds, gamesByTournamentId],
+  );
 
   const pairings = useMemo(() => groupIntoPairings(games), [games]);
   const teams = useMemo(() => uniqueTeams(games), [games]);
@@ -110,24 +171,23 @@ function OlympiadWatchPageInner() {
   const gridPageStart = clampedGridPage * GRID_PAGE_SIZE;
   const pagedBoards = filteredBoards.slice(gridPageStart, gridPageStart + GRID_PAGE_SIZE);
 
-  // A team selection is an explicit "take me to their board" action, so it
-  // resets the pin. Section (Open/Women's/All) is deliberately NOT in this
-  // list — switching sections while watching a board shouldn't yank focus
-  // back to board 1; if the pinned board genuinely isn't in the new
-  // section's games, `focusedGame` below already falls back to the first
-  // available board on its own (via the `.find()` returning nothing).
-  useEffect(() => {
-    setFocusedBoardKey(null);
-  }, [selectedTeam]);
-
   const focusedGame = useMemo(() => {
     if (focusedBoardKey) {
-      const found = games.find((g) => g.boardKey === focusedBoardKey);
-      if (found) return found;
+      // Searches the full unfiltered set, not just the active section's
+      // `games` — a deep link's board must resolve regardless of which
+      // section happens to be selected (e.g. it defaults to "open" but the
+      // clicked board was a Women's game). And whenever a specific board
+      // WAS requested (a lobby click, or ?focus= in the URL), never
+      // silently substitute a different one if it isn't found — that's
+      // what made clicking one game land on a completely different one.
+      // Falling through to "no focused game" instead just shows the
+      // render below's own waiting state until this board's poll catches
+      // up (it keeps polling in the background regardless).
+      return allGames.find((g) => g.boardKey === focusedBoardKey) ?? null;
     }
     const pool = filteredPairings.length > 0 ? filteredPairings : pairings;
     return pool[0]?.boards[0] ?? null;
-  }, [focusedBoardKey, games, filteredPairings, pairings]);
+  }, [focusedBoardKey, allGames, filteredPairings, pairings]);
 
   const {
     currentMoveIdx,
@@ -143,6 +203,48 @@ function OlympiadWatchPageInner() {
     blackClockSeconds,
     isAtLiveEdge,
   } = useFocusedGame(focusedGame);
+
+  // Keyboard move navigation — same convention as /play's Analyze mode
+  // (ArrowRight/Left step one ply, ArrowUp/Down jump to the start/live
+  // edge). OlympiadHistoryPanel's own footer already advertises this; it
+  // just never had a listener wired up to back it.
+  //
+  // stepMove/jumpToStart/jumpToEnd are plain closures re-created every
+  // render (not memoized) — reading them straight from a dependency array
+  // would either go stale (if the listener only re-attached rarely) or
+  // re-attach a window listener on every tick of the live clock. A ref
+  // updated every render sidesteps both: the effect below only actually
+  // re-attaches when the focused BOARD changes, but the handler it
+  // installed always calls through to whichever closures are current.
+  const navRef = useRef({ stepMove, jumpToStart, jumpToEnd });
+  useEffect(() => {
+    navRef.current = { stepMove, jumpToStart, jumpToEnd };
+  });
+  useEffect(() => {
+    if (!focusedGame) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        navRef.current.stepMove(1);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        navRef.current.stepMove(-1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        navRef.current.jumpToStart();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        navRef.current.jumpToEnd();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedGame?.boardKey]);
 
   const [isFlipped, setIsFlipped] = useState(false);
 
@@ -161,16 +263,21 @@ function OlympiadWatchPageInner() {
   // Otter output state (mirrors the subset of /play's page-level state that
   // AnalyzeSidebar's extracted panels read).
   const [topMoves, setTopMoves] = useState<PredictedMove[]>([]);
+  // Otter's own raw, mover-relative reading — feeds IntuitionPanel's plain
+  // signed number via OlympiadStatsPanel, distinct from the two labeled
+  // White/Black eval bars below.
   const [winProbability, setWinProbability] = useState(0);
-  // Which position winProbability was actually computed for — the eval bar
-  // reads through this instead of recomputing straight off winProbability +
-  // displayFen's turn on every render. Without it, the moment a new move
-  // lands, displayFen's turn flips immediately but winProbability is still
-  // the PREVIOUS position's value (inference takes a debounce + a round
-  // trip to resolve) — reinterpreting that stale value under the new
-  // turn's perspective inverts the bar for a frame (a visible dip-then-
-  // rise flicker) before the fresh result arrives and corrects it.
-  const [winProbFen, setWinProbFen] = useState('');
+  // Two separate readings instead of one flipped-based-on-turn number —
+  // Otter's value head turns out not to be fully consistent between "White
+  // to move" and "Black to move" framings of the same real game trajectory
+  // (confirmed by direct testing against real finished games), so forcing
+  // both into a single number made the bar swing depending purely on whose
+  // turn it was, not on what was actually happening in the game. Showing
+  // both readings side by side is honest about that instead of hiding it
+  // behind a transform, and lets each stay pinned to its own label —
+  // "White" always means the White-to-move query's own answer.
+  const [otterWhitePct, setOtterWhitePct] = useState(50);
+  const [otterBlackPct, setOtterBlackPct] = useState(50);
   const [auxMovingPiece, setAuxMovingPiece] = useState('-');
   const [auxCapturedPiece, setAuxCapturedPiece] = useState('-');
   const [auxCheckProb, setAuxCheckProb] = useState('-');
@@ -352,7 +459,45 @@ function OlympiadWatchPageInner() {
       if (currentSeq !== lastInferenceSeqRef.current) return;
 
       setWinProbability(valuePred as number);
-      setWinProbFen(fenStr);
+
+      // This query already answered "how does Otter see this for whoever's
+      // actually moving" — when isWhiteTurn, that IS the White bar's own
+      // reading directly (no flip needed, since the value head already
+      // answers from the mover's own perspective). The OTHER bar needs a
+      // second, hypothetical query treating this same arrangement as if
+      // the other side were to move (see withOppositeTurn) — fired after
+      // this one resolves rather than in parallel, so it can't collide
+      // with the worker's own "a newer live request supersedes the queued
+      // one" logic.
+      const realPct = Math.round(((valuePred as number) + 1) / 2 * 100);
+      if (isWhiteTurn) setOtterWhitePct(realPct); else setOtterBlackPct(realPct);
+
+      const oppositeFen = withOppositeTurn(fenStr);
+      if (oppositeFen) {
+        try {
+          const oc = new Chess(oppositeFen);
+          const oppBoardData = boardToTensor(oc);
+          const oppIsWhiteTurn = !isWhiteTurn;
+          const oppActiveElo = eloToBucket(oppIsWhiteTurn ? whiteElo : blackElo);
+          const oppOpponentElo = eloToBucket(oppIsWhiteTurn ? blackElo : whiteElo);
+          const oppResult = await callOtterWorker('live', {
+            board: oppBoardData,
+            historyIds,
+            historyMask,
+            activeElo: oppActiveElo,
+            opponentElo: oppOpponentElo,
+            tc: OLYMPIAD_TC_BUCKET,
+            clock: [clockFraction, 0.0],
+          }, true);
+          if (currentSeq !== lastInferenceSeqRef.current) return;
+          const oppPct = Math.round(((oppResult.valuePred as number) + 1) / 2 * 100);
+          if (oppIsWhiteTurn) setOtterWhitePct(oppPct); else setOtterBlackPct(oppPct);
+        } catch (_) {
+          // This exact arrangement is illegal with the other side to move
+          // (e.g. it would leave the real mover in check) — leave that
+          // side's bar showing its last known value rather than guessing.
+        }
+      }
 
       const isBlackTurn = c.turn() === 'b';
       const legalUcis = c.moves({ verbose: true }).map((m) => m.from + m.to + (m.promotion || ''));
@@ -541,24 +686,18 @@ function OlympiadWatchPageInner() {
     evaluatePositionOnce,
   });
 
-  // Recomputed only once winProbFen actually matches the displayed
-  // position — otherwise this holds its previous value (frozen) rather
-  // than reinterpreting a stale winProbability under the new position's
-  // turn, which is what caused the dip-then-correct flicker on every move.
-  const [otterWinPct, setOtterWinPct] = useState(50);
-  useEffect(() => {
-    if (winProbFen !== displayFen) return;
-    const activeTurn = displayFen.split(' ')[1] === 'b' ? 'b' : 'w';
-    const normalized = (winProbability + 1) / 2;
-    setOtterWinPct(Math.round((activeTurn === 'w' ? normalized : 1 - normalized) * 100));
-  }, [displayFen, winProbability, winProbFen]);
-
   const turn: 'w' | 'b' = displayFen.split(' ')[1] === 'b' ? 'b' : 'w';
+  // When the focused game's own tournament hasn't reported a real poll
+  // timestamp yet (e.g. isDemo, or genuinely still loading), Date.now() is
+  // the only sane fallback — it just means "assume this reading is fresh,"
+  // which is exactly what the hook always assumed before asOf existed.
+  const clockAsOf = (focusedGame && asOfByTournamentId.get(focusedGame.tournamentId)) ?? Date.now();
   const { whiteDisplay: liveWhiteClock, blackDisplay: liveBlackClock } = useTickingClock(
     whiteClockSeconds,
     blackClockSeconds,
     turn,
     isAtLiveEdge && focusedGame?.result === '*',
+    clockAsOf,
   );
 
   const enginesReady = modelAvailable && stockfishAvailable;
@@ -569,8 +708,6 @@ function OlympiadWatchPageInner() {
       {focusedGame ? (
         <>
           <OlympiadHistoryPanel
-            white={nameWithTitle(focusedGame.white, focusedGame.whiteTitle)}
-            black={nameWithTitle(focusedGame.black, focusedGame.blackTitle)}
             moves={focusedGame.moves}
             currentMoveIdx={currentMoveIdx}
             goToMove={goToMove}
@@ -617,7 +754,8 @@ function OlympiadWatchPageInner() {
               topMoves={enginesReady ? topMoves : []}
               sfTopMoves={enginesReady ? sfTopMoves : []}
               playedMove={nextPlayedMove ? { from: nextPlayedMove.from, to: nextPlayedMove.to } : null}
-              otterWinPct={otterWinPct}
+              otterWhitePct={otterWhitePct}
+              otterBlackPct={otterBlackPct}
               stockfishEvalPct={stockfishEvalPct}
               whiteLabel={nameWithTitle(focusedGame.white, focusedGame.whiteTitle)}
               blackLabel={nameWithTitle(focusedGame.black, focusedGame.blackTitle)}
@@ -634,7 +772,20 @@ function OlympiadWatchPageInner() {
             <div className="mt-3">
               <div className="p-3 px-4 lg:px-6 flex flex-wrap items-center justify-between gap-2.5 shrink-0 border-y border-line">
                 <div className="flex flex-wrap items-center gap-2.5">
-                  <TeamDropdown teams={teams} selectedTeam={selectedTeam} setSelectedTeam={setSelectedTeam} />
+                  <TeamDropdown
+                    teams={teams}
+                    selectedTeam={selectedTeam}
+                    // Picking a team here is an explicit "take me to their
+                    // board" action, so it drops the current pin — done
+                    // right at this call site (not a passive effect keyed
+                    // on selectedTeam) so it only fires on an actual click,
+                    // never on mount or when the team carries over from the
+                    // lobby's own selection.
+                    setSelectedTeam={(team) => {
+                      setSelectedTeam(team);
+                      setFocusedBoardKey(null);
+                    }}
+                  />
                   <SectionToggle section={section} setSection={setSection} />
                 </div>
                 <GridPagination
@@ -684,7 +835,13 @@ function OlympiadWatchPageInner() {
             {tournamentOverride ? 'Broadcast' : OLYMPIAD_TOURNAMENT_NAME}
           </span>
           <h2 className="font-space text-lg text-paper">
-            {gamesError ? gamesError : gamesLoading ? 'Loading the live broadcast…' : 'Waiting for the round to start.'}
+            {gamesError
+              ? gamesError
+              : focusedBoardKey
+              ? 'Still connecting to that game — it should appear in a few seconds.'
+              : gamesLoading
+              ? 'Loading the live broadcast…'
+              : 'Waiting for the round to start.'}
           </h2>
           {roundName && <p className="font-mono text-[12px] text-muted">{roundName}</p>}
         </div>

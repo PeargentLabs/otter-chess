@@ -19,19 +19,31 @@ export const OPEN_TOURNAMENT_IDS = ['n1pPI5Q0', 'MSQXIzkK', 'Uvg2Lyjt', 'sfWvd9P
 // "Women" section — four parallel broadcasts, same structure as Open.
 export const WOMENS_TOURNAMENT_IDS = ['HtMn014k', 'UjEVXNHv', 'JyQqARgN', 'oQuU2arG'];
 
+// Every sub-broadcast across both sections — the lobby and watch pages poll
+// this whole set continuously regardless of which section (Open/Women's/
+// All) is currently displayed, so switching the section toggle is a
+// client-side filter over already-fetched data, never a new fetch.
+export const ALL_TOURNAMENT_IDS = [...OPEN_TOURNAMENT_IDS, ...WOMENS_TOURNAMENT_IDS];
+
 export const OLYMPIAD_TOURNAMENT_NAME = '46th FIDE Chess Olympiad Samarkand 2026';
 
 export const LICHESS_API_BASE = 'https://lichess.org/api';
 
-// Lichess's team-standings endpoint (GET /broadcast/{tournamentId}/teams/standings
-// — tournament id only, no slug) has real, complete data (match points, game
-// points, per-round results, rosters) but confirmed via live header inspection
-// to send no Access-Control-Allow-Origin — a direct browser fetch is CORS-
-// blocked. standings-proxy/ is a small separate Cloudflare Worker that
-// re-serves it with CORS allowed; this only has a value once that's deployed
-// and NEXT_PUBLIC_STANDINGS_PROXY_URL is set at build time. Unset (the
-// default until then) means useStandings degrades to null, and the lobby
-// shows a chess-results.com link instead of a table — never a broken fetch.
+// standings-proxy/ is a small Cloudflare Worker that re-serves three
+// Lichess broadcast endpoints with CORS allowed and a short edge cache in
+// front of each (see standings-proxy/worker.js) — team standings (which
+// send no Access-Control-Allow-Origin at all, confirmed via live header
+// inspection, so a direct browser fetch is CORS-blocked without this),
+// plus tournament info and round PGN snapshots (CORS-open, so
+// broadcast-api.ts calls Lichess directly for those when this is unset,
+// but every visitor's own browser then competes for Lichess's "one request
+// at a time" limit — routing through the Worker's cache collapses that
+// down to a handful of real upstream requests no matter the traffic).
+// This only has a value once the Worker is deployed and
+// NEXT_PUBLIC_STANDINGS_PROXY_URL is set at build time. Unset (the default
+// until then) means useStandings degrades to null and the lobby shows a
+// chess-results.com link instead of a table, and game/round data falls
+// back to direct-from-Lichess fetches — never a broken build either way.
 export const STANDINGS_PROXY_URL = process.env.NEXT_PUBLIC_STANDINGS_PROXY_URL ?? null;
 
 // How often to re-check which round is "current" for each tournament —

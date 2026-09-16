@@ -48,7 +48,7 @@ const parseBoardNumber = (round: string | null | undefined): number | null => {
 // text regardless of where they land inside it.
 const mergeAdjacentComments = (pgn: string): string => pgn.replace(/\}\s*\{/g, ' ');
 
-function parseOneGame(pgnBlock: string): OlympiadGame | null {
+function parseOneGame(pgnBlock: string, tournamentId: string): OlympiadGame | null {
   const tempChess = new Chess();
   try {
     tempChess.loadPgn(mergeAdjacentComments(pgnBlock));
@@ -95,6 +95,7 @@ function parseOneGame(pgnBlock: string): OlympiadGame | null {
 
   return {
     boardKey,
+    tournamentId,
     boardNumber: parseBoardNumber(headers.Round),
     white: cleanHeader(headers.White) || 'White',
     black: cleanHeader(headers.Black) || 'Black',
@@ -114,11 +115,11 @@ function parseOneGame(pgnBlock: string): OlympiadGame | null {
 // each starting with its own [Event "..."] header — split on that
 // boundary rather than trying to detect blank-line game separators, which
 // also appear inside a single game's own header block.
-export function parseBroadcastPgn(pgnText: string): OlympiadGame[] {
+export function parseBroadcastPgn(pgnText: string, tournamentId: string): OlympiadGame[] {
   const blocks = pgnText.split(/(?=^\[Event )/m).map((b) => b.trim()).filter(Boolean);
   const games: OlympiadGame[] = [];
   for (const block of blocks) {
-    const game = parseOneGame(block);
+    const game = parseOneGame(block, tournamentId);
     if (game) games.push(game);
   }
   return games;

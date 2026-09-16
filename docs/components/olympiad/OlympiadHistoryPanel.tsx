@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import type { BranchMove } from '@/lib/play/types';
 
 // Left-side move history for the Olympiad main board — the same move-pair
@@ -9,8 +9,6 @@ import type { BranchMove } from '@/lib/play/types';
 // time-control conditioning sliders, which have no meaning for reviewing
 // someone else's already-played live game.
 export default function OlympiadHistoryPanel({
-  white,
-  black,
   moves,
   currentMoveIdx,
   goToMove,
@@ -18,8 +16,6 @@ export default function OlympiadHistoryPanel({
   jumpToEnd,
   stepMove,
 }: {
-  white: string;
-  black: string;
   moves: BranchMove[];
   currentMoveIdx: number;
   goToMove: (idx: number) => void;
@@ -27,6 +23,16 @@ export default function OlympiadHistoryPanel({
   jumpToEnd: () => void;
   stepMove: (direction: 1 | -1) => void;
 }) {
+  // Keeps the CURRENTLY ACTIVE move in view rather than just the bottom —
+  // at the live tip that's the same thing (scrolled to the latest move by
+  // default, on mount and every time a new one lands), but it also means
+  // stepping back through history with the buttons/arrow keys below keeps
+  // the highlighted move visible instead of leaving it scrolled off.
+  const activeMoveRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    activeMoveRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [currentMoveIdx]);
+
   return (
     <div className="order-3 lg:order-1 border-t border-line lg:border-t-0 w-full lg:w-[300px] shrink-0 max-h-[45dvh] lg:max-h-none flex flex-col bg-panel min-h-0 divide-y divide-line">
       <div className="flex-grow overflow-y-auto min-h-0 flex flex-col">
@@ -34,9 +40,6 @@ export default function OlympiadHistoryPanel({
           <span className="block-label font-mono text-[12px] text-pear tracking-[0.12em] uppercase font-bold">
             Move History <span className="text-muted normal-case font-normal">({moves.length})</span>
           </span>
-        </div>
-        <div className="p-4 px-6 pb-2 shrink-0 text-[12px] font-mono text-muted truncate">
-          <span className="text-paper font-semibold">{white}</span> vs <span className="text-paper font-semibold">{black}</span>
         </div>
 
         <div className="p-4 px-6 pt-0 shrink-0 flex-grow flex flex-col min-h-0">
@@ -54,6 +57,7 @@ export default function OlympiadHistoryPanel({
                   return (
                     <React.Fragment key={movePairIdx}>
                       <button
+                        ref={move1Active ? activeMoveRef : undefined}
                         onClick={() => goToMove(move1Idx)}
                         className={`text-left truncate cursor-pointer px-2 py-1 rounded-[3px] border-l-2 transition-all ${
                           move1Active
@@ -66,6 +70,7 @@ export default function OlympiadHistoryPanel({
                       </button>
                       {m2 ? (
                         <button
+                          ref={move2Active ? activeMoveRef : undefined}
                           onClick={() => goToMove(move2Idx)}
                           className={`text-left truncate cursor-pointer px-2 py-1 rounded-[3px] border-l-2 transition-all ${
                             move2Active

@@ -145,6 +145,26 @@ export const mirrorMove = (moveUci: string): string => {
   return `${mirrorSquare(from)}${mirrorSquare(to)}${promo}`;
 };
 
+// Same piece arrangement, but with the active-color field flipped — used
+// to ask Otter's value head "what would you make of this if it were the
+// OTHER side's move", alongside the real query, for a two-sided (White
+// view / Black view) eval display instead of trying to force one flipped
+// number into a single bar. En passant is reset since it's only ever
+// legal for whichever side genuinely just had it played against them —
+// pretending the other side moved next doesn't carry that over. Returns
+// null only for a malformed FEN; the flip can still produce a position
+// that's illegal in its own right (e.g. it would leave the side no longer
+// "to move" in check, which can't arise from real play) — callers
+// constructing a Chess instance from the result should expect that to
+// throw and skip that side's hypothetical reading rather than feeding the
+// model something it never saw in training.
+export const withOppositeTurn = (fen: string): string | null => {
+  const parts = fen.split(' ');
+  if (parts.length < 6) return null;
+  const oppositeTurn = parts[1] === 'w' ? 'b' : 'w';
+  return [parts[0], oppositeTurn, parts[2], '-', parts[4], parts[5]].join(' ');
+};
+
 export const formatUciAsSan = (uci: string, fen?: string): string => {
   if (!fen) return uci;
   try {

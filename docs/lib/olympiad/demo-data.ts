@@ -35,6 +35,7 @@ function buildDemoGame(opts: {
   const moves = buildDemoMoves(opts.sanMoves);
   return {
     boardKey: opts.boardKey,
+    tournamentId: 'demo',
     boardNumber: opts.boardNumber,
     white: opts.white,
     black: opts.black,

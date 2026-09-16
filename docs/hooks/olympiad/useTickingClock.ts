@@ -9,6 +9,16 @@ import { useEffect, useRef, useState } from 'react';
 // tick's zero-point, so it never drifts far from the broadcast's own
 // numbers — it's just filling in the seconds between them.
 //
+// `asOf` is when that reading was actually true — Date.now() for one that
+// just came from a live poll, but potentially many minutes ago for one
+// seeded from useOlympiadSection's stale-cache fallback on page load. This
+// used to always assume "just now" (whenever this hook first SAW a given
+// reading), which was fine before that cache existed — every reading really
+// did just arrive — but treated an old cached reading as freshly captured
+// too, ticking down from it as if no time had passed and showing an
+// inflated clock next to Lichess's own correctly-ticked one until the next
+// live poll happened to land.
+//
 // Ticking is disabled entirely (frozen display) when `isLive` is false —
 // there's nothing to tick towards while reviewing history or before a game
 // has moves.
@@ -17,13 +27,19 @@ export function useTickingClock(
   blackClockSeconds: number | null,
   turn: 'w' | 'b',
   isLive: boolean,
+  asOf: number,
 ) {
-  const baseRef = useRef({ white: whiteClockSeconds, black: blackClockSeconds, capturedAt: Date.now() });
+  const baseRef = useRef({ white: whiteClockSeconds, black: blackClockSeconds, capturedAt: asOf });
   const [, forceTick] = useState(0);
 
   useEffect(() => {
-    baseRef.current = { white: whiteClockSeconds, black: blackClockSeconds, capturedAt: Date.now() };
+    // Only the reading itself (not `asOf` alone) should reset the
+    // zero-point — every poll cycle re-confirms the same %clk value with a
+    // fresh `asOf` even when no new move happened, and resetting on that
+    // would make the displayed clock visibly jump back up every ~10s.
+    baseRef.current = { white: whiteClockSeconds, black: blackClockSeconds, capturedAt: asOf };
     forceTick((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [whiteClockSeconds, blackClockSeconds]);
 
   useEffect(() => {

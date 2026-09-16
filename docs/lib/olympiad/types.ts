@@ -15,6 +15,12 @@ export interface OlympiadGame {
   // Stable per-game identity (Lichess's GameURL header) — doesn't change
   // as the game progresses, unlike an array index into the round's games.
   boardKey: string;
+  // Which Lichess sub-broadcast this game came from (one of config.ts's
+  // OPEN_TOURNAMENT_IDS / WOMENS_TOURNAMENT_IDS) — lets callers that poll
+  // several sections' worth of sub-broadcasts at once (see
+  // useOlympiadSection's gamesByTournamentId) tell which section a given
+  // game actually belongs to, e.g. when deep-linking to it from the lobby.
+  tournamentId: string;
   boardNumber: number | null;
   white: string;
   black: string;
