@@ -23,6 +23,7 @@ import MiniBoardStrip from '@/components/olympiad/MiniBoardStrip';
 import GridPagination from '@/components/olympiad/GridPagination';
 import TeamDropdown from '@/components/olympiad/TeamDropdown';
 import SectionToggle, { type OlympiadSection } from '@/components/olympiad/SectionToggle';
+import SetupModal from '@/components/play/modals/SetupModal';
 
 // Real Olympiad games are classical time control ("90 min/40 moves + 30
 // min + 30s/move"). When the broadcast includes real %clk data (see
@@ -266,6 +267,7 @@ function OlympiadWatchPageInner() {
   // editor-mode UI that doesn't apply here.
   const [modelAvailable, setModelAvailable] = useState(false);
   const [stockfishAvailable, setStockfishAvailable] = useState(false);
+  const [showSetupModal, setShowSetupModal] = useState(false);
   const [isDownloadingModel, setIsDownloadingModel] = useState(false);
   const [modelProgress, setModelProgress] = useState(0);
   const [isDownloadingSf, setIsDownloadingSf] = useState(false);
@@ -336,6 +338,14 @@ function OlympiadWatchPageInner() {
         const sfRes = await cache.match('/stockfish.js');
         setModelAvailable(!!modelRes);
         setStockfishAvailable(!!sfRes);
+        const hasModel = !!modelRes;
+        const hasSf = !!sfRes;
+        setModelAvailable(hasModel);
+        setStockfishAvailable(hasSf);
+
+        if (!hasModel || !hasSf) {
+          setShowSetupModal(true);
+        }
       } catch (err) {
         console.error('Cache check failed:', err);
       }
@@ -767,6 +777,12 @@ function OlympiadWatchPageInner() {
                   Download the analysis engines to see Otter &amp; Stockfish arrows for this game.
                 </span>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setShowSetupModal(true)}
+                    className="font-mono text-[11px] uppercase font-bold text-pear border border-pear px-2.5 py-1 rounded-[2px] hover:bg-pear hover:text-bg cursor-pointer transition-all"
+                  >
+                    Setup Engines
+                  </button>
                   {!modelAvailable && (
                     <button
                       onClick={downloadOtterModel}
@@ -893,6 +909,23 @@ function OlympiadWatchPageInner() {
           </h2>
           {roundName && <p className="font-mono text-[12px] text-muted">{roundName}</p>}
         </div>
+      )}
+
+      {/* ================= MODAL: INITIALIZE / DOWNLOAD ENGINES ================= */}
+      {showSetupModal && (
+        <SetupModal
+          onClose={() => setShowSetupModal(false)}
+          modelAvailable={modelAvailable}
+          isDownloadingModel={isDownloadingModel}
+          modelProgress={modelProgress}
+          downloadOtterModel={downloadOtterModel}
+          stockfishAvailable={stockfishAvailable}
+          isDownloadingSf={isDownloadingSf}
+          sfProgress={sfProgress}
+          downloadStockfish={downloadStockfish}
+          downloadError={downloadError}
+          description="We need to download the models to see live Otter & Stockfish analysis."
+        />
       )}
     </div>
   );

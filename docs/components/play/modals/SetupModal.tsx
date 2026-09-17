@@ -11,6 +11,7 @@ export default function SetupModal({
   sfProgress,
   downloadStockfish,
   downloadError,
+  description,
 }: {
   onClose: () => void;
   modelAvailable: boolean;
@@ -22,6 +23,7 @@ export default function SetupModal({
   sfProgress: number;
   downloadStockfish: () => void;
   downloadError: string | null;
+  description?: string;
 }) {
   return (
     <div className="fixed inset-0 p-4 flex items-center justify-center bg-paper/20 backdrop-blur-sm z-50 transition-opacity">
@@ -43,6 +45,7 @@ export default function SetupModal({
 
         <p className="text-xs text-muted leading-relaxed font-sans">
           We need to download the models to challenge Otter.
+          {description ?? 'We need to download the models to challenge Otter.'}
         </p>
 
         <div className="space-y-4">
@@ -115,6 +118,15 @@ export default function SetupModal({
           <div className="text-[10.5px] text-rose-500 font-mono bg-rose-500/10 border border-rose-500/30 rounded px-2.5 py-2 leading-relaxed text-center">
             {downloadError}
           </div>
+        )}
+
+        {modelAvailable && stockfishAvailable && (
+          <button
+            onClick={onClose}
+            className="w-full py-2 font-mono text-xs font-bold uppercase tracking-wider text-bg bg-pear hover:bg-pear-dim transition-colors rounded-[2px] cursor-pointer"
+          >
+            Ready — Continue
+          </button>
         )}
 
         <div className="text-[11px] text-muted italic font-mono pt-1 text-center">
