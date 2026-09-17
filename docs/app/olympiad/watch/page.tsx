@@ -247,6 +247,19 @@ function OlympiadWatchPageInner() {
   }, [focusedGame?.boardKey]);
 
   const [isFlipped, setIsFlipped] = useState(false);
+  // Off by default — real broadcast clock data is noisy/incomplete (not
+  // every feed carries %clk, see lib/olympiad/pgn-parser.ts) and turned out
+  // to be one more variable worth isolating while comparing Otter's reads
+  // against known outcomes. On, it's the focused game's real remaining-time
+  // fraction; off, a neutral mid-clock reading, same as when a feed simply
+  // doesn't have %clk data at all.
+  const [passClockToOtter, setPassClockToOtter] = useState(false);
+  // On by default (unlike the clock) — the move sequence leading to this
+  // position is real, complete data straight from the broadcast PGN, not
+  // something noisy/partial like %clk coverage. Off feeds an empty history
+  // window instead, for isolating how much of a read comes from the
+  // position alone versus the moves that led to it.
+  const [passHistoryToOtter, setPassHistoryToOtter] = useState(true);
 
   // Engine availability / download gating — trimmed version of /play's
   // engine bootstrap (same cache, same asset URLs), without the match/
@@ -414,6 +427,47 @@ function OlympiadWatchPageInner() {
   const clockToFraction = (clockSeconds: number | null) =>
     clockSeconds !== null ? Math.max(0, Math.min(1, clockSeconds / OLYMPIAD_CLOCK_BASE_SECONDS)) : OLYMPIAD_DEFAULT_CLOCK_FRACTION;
 
+  // The secondary (non-mover) side's bar — see the call site in
+  // runOtterInference below for why this is split out and fire-and-forget
+  // rather than awaited inline: it must never delay the move arrows/aux
+  // stats, which only need the FIRST query's already-resolved data.
+  const runOtterOppositeInference = async (
+    fenStr: string,
+    realIsWhiteTurn: boolean,
+    whiteElo: number,
+    blackElo: number,
+    clockFraction: number,
+    historyIds: BigInt64Array,
+    historyMask: Uint8Array,
+    currentSeq: number,
+  ) => {
+    const oppositeFen = withOppositeTurn(fenStr);
+    if (!oppositeFen) return;
+    try {
+      const oc = new Chess(oppositeFen);
+      const oppBoardData = boardToTensor(oc);
+      const oppIsWhiteTurn = !realIsWhiteTurn;
+      const oppActiveElo = eloToBucket(oppIsWhiteTurn ? whiteElo : blackElo);
+      const oppOpponentElo = eloToBucket(oppIsWhiteTurn ? blackElo : whiteElo);
+      const oppResult = await callOtterWorker('live', {
+        board: oppBoardData,
+        historyIds,
+        historyMask,
+        activeElo: oppActiveElo,
+        opponentElo: oppOpponentElo,
+        tc: OLYMPIAD_TC_BUCKET,
+        clock: [clockFraction, 0.0],
+      }, true);
+      if (currentSeq !== lastInferenceSeqRef.current) return;
+      const oppPct = Math.round(((oppResult.valuePred as number) + 1) / 2 * 100);
+      if (oppIsWhiteTurn) setOtterWhitePct(oppPct); else setOtterBlackPct(oppPct);
+    } catch (_) {
+      // This exact arrangement is illegal with the other side to move (e.g.
+      // it would leave the real mover in check) — leave that side's bar
+      // showing its last known value rather than guessing.
+    }
+  };
+
   // Otter inference for the currently displayed position — adapted from
   // /play's runModelInference (app/play/page.tsx), with Analyze-mode's
   // rating-bracket/time-format sliders replaced by the focused game's real
@@ -431,7 +485,9 @@ function OlympiadWatchPageInner() {
     try {
       const boardData = boardToTensor(c);
 
-      const canonicalHistory = history.map((move, i) => (i % 2 === 1 ? mirrorMove(move) : move));
+      const canonicalHistory = passHistoryToOtter
+        ? history.map((move, i) => (i % 2 === 1 ? mirrorMove(move) : move))
+        : [];
       const historyIds = new BigInt64Array(20);
       const historyMask = new Uint8Array(20);
       const windowMoves = canonicalHistory.slice(-20);
@@ -463,41 +519,19 @@ function OlympiadWatchPageInner() {
       // This query already answered "how does Otter see this for whoever's
       // actually moving" — when isWhiteTurn, that IS the White bar's own
       // reading directly (no flip needed, since the value head already
-      // answers from the mover's own perspective). The OTHER bar needs a
-      // second, hypothetical query treating this same arrangement as if
-      // the other side were to move (see withOppositeTurn) — fired after
-      // this one resolves rather than in parallel, so it can't collide
-      // with the worker's own "a newer live request supersedes the queued
-      // one" logic.
+      // answers from the mover's own perspective).
       const realPct = Math.round(((valuePred as number) + 1) / 2 * 100);
       if (isWhiteTurn) setOtterWhitePct(realPct); else setOtterBlackPct(realPct);
 
-      const oppositeFen = withOppositeTurn(fenStr);
-      if (oppositeFen) {
-        try {
-          const oc = new Chess(oppositeFen);
-          const oppBoardData = boardToTensor(oc);
-          const oppIsWhiteTurn = !isWhiteTurn;
-          const oppActiveElo = eloToBucket(oppIsWhiteTurn ? whiteElo : blackElo);
-          const oppOpponentElo = eloToBucket(oppIsWhiteTurn ? blackElo : whiteElo);
-          const oppResult = await callOtterWorker('live', {
-            board: oppBoardData,
-            historyIds,
-            historyMask,
-            activeElo: oppActiveElo,
-            opponentElo: oppOpponentElo,
-            tc: OLYMPIAD_TC_BUCKET,
-            clock: [clockFraction, 0.0],
-          }, true);
-          if (currentSeq !== lastInferenceSeqRef.current) return;
-          const oppPct = Math.round(((oppResult.valuePred as number) + 1) / 2 * 100);
-          if (oppIsWhiteTurn) setOtterWhitePct(oppPct); else setOtterBlackPct(oppPct);
-        } catch (_) {
-          // This exact arrangement is illegal with the other side to move
-          // (e.g. it would leave the real mover in check) — leave that
-          // side's bar showing its last known value rather than guessing.
-        }
-      }
+      // The OTHER bar needs a second, hypothetical query treating this same
+      // arrangement as if the other side were to move (see
+      // withOppositeTurn) — kicked off here but NOT awaited: the move
+      // arrows/aux stats below only need the query that already resolved
+      // above, so waiting on a second full model pass before computing them
+      // was pure added latency on every single navigation, doubling how
+      // long clicking through moves took to feel responsive. It updates
+      // the other bar whenever it finishes instead.
+      runOtterOppositeInference(fenStr, isWhiteTurn, whiteElo, blackElo, clockFraction, historyIds, historyMask, currentSeq);
 
       const isBlackTurn = c.turn() === 'b';
       const legalUcis = c.moves({ verbose: true }).map((m) => m.from + m.to + (m.promotion || ''));
@@ -581,7 +615,9 @@ function OlympiadWatchPageInner() {
     if (!otterWorkerRef.current || !modelLoaded) return null;
     try {
       const boardData = boardToTensor(c);
-      const canonicalHistory = history.map((move, i) => (i % 2 === 1 ? mirrorMove(move) : move));
+      const canonicalHistory = passHistoryToOtter
+        ? history.map((move, i) => (i % 2 === 1 ? mirrorMove(move) : move))
+        : [];
       const historyIds = new BigInt64Array(20);
       const historyMask = new Uint8Array(20);
       const windowMoves = canonicalHistory.slice(-20);
@@ -629,32 +665,38 @@ function OlympiadWatchPageInner() {
 
   // Redirect both engines to whatever position is currently displayed —
   // the live tip normally, or an earlier ply when reviewing history.
-  // Debounced so a burst of position changes (e.g. several moves landing
-  // in one poll) doesn't fire repeated stop/go cycles on the live
-  // Stockfish worker.
+  // Fires immediately, same as /play's Analyze mode (updateGameState in
+  // app/play/page.tsx): the position itself is already on screen the
+  // instant currentMoveIdx changes (displayFen is a plain useMemo off it,
+  // no async in the way), and runOtterInference is fire-and-forget here
+  // exactly like /play's own runModelInference call — this effect never
+  // awaits it, so clicking through moves never waits on the engines. A
+  // debounce here was pure extra latency stacked on top of that for no
+  // benefit: rapid navigation is already handled by the Otter worker's own
+  // "a newer live request supersedes the queued one" logic (see
+  // public/otter-worker.js) and by Stockfish's own 'stop' before each new
+  // 'go', not by delaying when either one starts.
   useEffect(() => {
     if (!focusedGame) return;
-    const handle = setTimeout(() => {
-      currentFenRef.current = displayFen;
-      activeTurnRef.current = displayFen.split(' ')[1] === 'b' ? 'b' : 'w';
-      ignoreSearchLinesRef.current = true;
-      sfMultiPvBufferRef.current.clear();
-      setSfTopMoves([]);
+    currentFenRef.current = displayFen;
+    activeTurnRef.current = displayFen.split(' ')[1] === 'b' ? 'b' : 'w';
+    ignoreSearchLinesRef.current = true;
+    sfMultiPvBufferRef.current.clear();
+    setSfTopMoves([]);
 
-      if (stockfishRef.current) {
-        stockfishRef.current.postMessage('stop');
-        stockfishRef.current.postMessage(`position fen ${displayFen}`);
-        stockfishRef.current.postMessage('go depth 13');
-      }
+    if (stockfishRef.current) {
+      stockfishRef.current.postMessage('stop');
+      stockfishRef.current.postMessage(`position fen ${displayFen}`);
+      stockfishRef.current.postMessage('go depth 13');
+    }
 
-      if (modelLoaded) {
-        const activeClock = (displayFen.split(' ')[1] === 'b' ? blackClockSeconds : whiteClockSeconds);
-        runOtterInference(displayFen, historyUcis, whiteElo, blackElo, clockToFraction(activeClock));
-      }
-    }, 250);
-    return () => clearTimeout(handle);
+    if (modelLoaded) {
+      const activeClock = (displayFen.split(' ')[1] === 'b' ? blackClockSeconds : whiteClockSeconds);
+      const clockFraction = passClockToOtter ? clockToFraction(activeClock) : OLYMPIAD_DEFAULT_CLOCK_FRACTION;
+      runOtterInference(displayFen, historyUcis, whiteElo, blackElo, clockFraction);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayFen, modelLoaded, focusedGame?.boardKey]);
+  }, [displayFen, modelLoaded, focusedGame?.boardKey, passClockToOtter, passHistoryToOtter]);
 
   const displayChess = useMemo(() => {
     try {
@@ -679,7 +721,9 @@ function OlympiadWatchPageInner() {
     runModelInferenceAtElo: (c, history, activeEloBucket) => {
       const isWhiteTurn = c.turn() === 'w';
       const opponentEloVal = eloToBucket(isWhiteTurn ? blackElo : whiteElo);
-      const clockFraction = clockToFraction(isWhiteTurn ? whiteClockSeconds : blackClockSeconds);
+      const clockFraction = passClockToOtter
+        ? clockToFraction(isWhiteTurn ? whiteClockSeconds : blackClockSeconds)
+        : OLYMPIAD_DEFAULT_CLOCK_FRACTION;
       return runOtterInferenceAtElo(c, history, activeEloBucket, opponentEloVal, clockFraction);
     },
     ensureBgStockfishWorker,
@@ -826,6 +870,10 @@ function OlympiadWatchPageInner() {
               ratingCurveLoading={ratingCurveLoading}
               ratingCurveHoverIdx={ratingCurveHoverIdx}
               setRatingCurveHoverIdx={setRatingCurveHoverIdx}
+              passClockToOtter={passClockToOtter}
+              setPassClockToOtter={setPassClockToOtter}
+              passHistoryToOtter={passHistoryToOtter}
+              setPassHistoryToOtter={setPassHistoryToOtter}
             />
           </div>
         </>

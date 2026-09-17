@@ -5,6 +5,7 @@ import type { PredictedMove, RatingCurveSeries } from '@/lib/play/types';
 import ComparisonPanel from '@/components/play/ComparisonPanel';
 import IntuitionPanel from '@/components/play/IntuitionPanel';
 import RatingChart from '@/components/play/RatingChart';
+import ToggleSwitch from '@/components/olympiad/ToggleSwitch';
 
 // Right-side stats column for the Olympiad main board — the same
 // Otter-vs-Stockfish comparison + AI Intuition dashboard /play's Analyze
@@ -27,6 +28,10 @@ export default function OlympiadStatsPanel({
   ratingCurveLoading,
   ratingCurveHoverIdx,
   setRatingCurveHoverIdx,
+  passClockToOtter,
+  setPassClockToOtter,
+  passHistoryToOtter,
+  setPassHistoryToOtter,
 }: {
   game: Chess | null;
   roundName: string | null;
@@ -44,6 +49,10 @@ export default function OlympiadStatsPanel({
   ratingCurveLoading: boolean;
   ratingCurveHoverIdx: number | null;
   setRatingCurveHoverIdx: (idx: number | null) => void;
+  passClockToOtter: boolean;
+  setPassClockToOtter: (v: boolean) => void;
+  passHistoryToOtter: boolean;
+  setPassHistoryToOtter: (v: boolean) => void;
 }) {
   return (
     <div className="flex-grow flex flex-col min-h-0 divide-y divide-line">
@@ -54,6 +63,11 @@ export default function OlympiadStatsPanel({
             {roundName || 'Olympiad Broadcast'}
           </h3>
         </div>
+      </div>
+
+      <div className="py-2 px-6 flex flex-wrap items-center justify-end gap-x-4 gap-y-1.5 shrink-0">
+        <ToggleSwitch checked={passClockToOtter} onChange={setPassClockToOtter} label="clock" />
+        <ToggleSwitch checked={passHistoryToOtter} onChange={setPassHistoryToOtter} label="move history" />
       </div>
 
       <ComparisonPanel game={game} topMoves={topMoves} sfTopMoves={sfTopMoves} />
