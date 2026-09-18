@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { memo, useEffect, useRef } from 'react';
 import type { BranchMove } from '@/lib/play/types';
 
 // Left-side move history for the Olympiad main board — the same move-pair
@@ -8,13 +8,22 @@ import type { BranchMove } from '@/lib/play/types';
 // mode), stripped of that column's rating-bracket/history-window/
 // time-control conditioning sliders, which have no meaning for reviewing
 // someone else's already-played live game.
-export default function OlympiadHistoryPanel({
+//
+// Memoized: a full game's move-pair grid (up to ~80 buttons) was being
+// rebuilt every second (the ticking clock) and on every Otter/Stockfish
+// tick, none of which this panel's own props depend on. Requires the
+// caller to hand it STABLE function identities (page.tsx does, via a
+// ref-indirected useCallback) — a plain inline arrow prop would defeat
+// this the same way it always defeats React.memo.
+function OlympiadHistoryPanel({
   moves,
   currentMoveIdx,
   goToMove,
   jumpToStart,
   jumpToEnd,
   stepMove,
+  showBackToLive,
+  onBackToLive,
 }: {
   moves: BranchMove[];
   currentMoveIdx: number;
@@ -22,6 +31,10 @@ export default function OlympiadHistoryPanel({
   jumpToStart: () => void;
   jumpToEnd: () => void;
   stepMove: (direction: 1 | -1) => void;
+  // Set whenever the board isn't showing the live position — either a
+  // hand-dragged exploration move or a step back into real history.
+  showBackToLive: boolean;
+  onBackToLive: () => void;
 }) {
   // Keeps the CURRENTLY ACTIVE move in view rather than just the bottom —
   // at the live tip that's the same thing (scrolled to the latest move by
@@ -98,6 +111,19 @@ export default function OlympiadHistoryPanel({
 
       {/* Navigation controls — anchored to the bottom of the column. */}
       <div className="p-4 px-6 bg-panel/10 border-t border-line flex flex-col gap-2 shrink-0">
+        {/* Shown whenever the board isn't showing the live position —
+            either a hand-dragged exploration move or a step back into
+            real history. One button undoes both at once. */}
+        {showBackToLive && (
+          <button
+            onClick={onBackToLive}
+            className="w-full py-1.5 font-mono text-[11px] uppercase tracking-wider font-bold text-bg bg-pear rounded-[3px] hover:bg-pear/90 transition-all cursor-pointer flex items-center justify-center gap-1.5"
+            title="Discard exploration and return to the live position"
+          >
+            <span>&#x2190;</span>
+            <span>Back to Live Board</span>
+          </button>
+        )}
         <div className="flex justify-between items-center gap-2">
           <button
             onClick={jumpToStart}
@@ -139,3 +165,5 @@ export default function OlympiadHistoryPanel({
     </div>
   );
 }
+
+export default memo(OlympiadHistoryPanel);

@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import type { Chess } from 'chess.js';
 import type { PredictedMove, RatingCurveSeries } from '@/lib/play/types';
 import ComparisonPanel from '@/components/play/ComparisonPanel';
@@ -11,7 +12,14 @@ import ToggleSwitch from '@/components/olympiad/ToggleSwitch';
 // Otter-vs-Stockfish comparison + AI Intuition dashboard /play's Analyze
 // mode shows, composed from the same two panel components so both pages
 // share one literal source of truth for that markup.
-export default function OlympiadStatsPanel({
+//
+// Memoized for the same reason as MiniBoardStrip: this renders the rating
+// chart (RatingChart, SVG paths derived from ratingCurveData) plus the
+// comparison/intuition panels, and every one of its props is already
+// stable across a pure clock tick (game only changes with the position,
+// every setter here is a raw useState/hook setter) — without memo, all of
+// that was rebuilt once a second for nothing.
+function OlympiadStatsPanel({
   game,
   roundName,
   topMoves,
@@ -96,3 +104,5 @@ export default function OlympiadStatsPanel({
     </div>
   );
 }
+
+export default memo(OlympiadStatsPanel);

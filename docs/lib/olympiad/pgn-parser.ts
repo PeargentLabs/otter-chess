@@ -115,12 +115,31 @@ function parseOneGame(pgnBlock: string, tournamentId: string): OlympiadGame | nu
 // each starting with its own [Event "..."] header — split on that
 // boundary rather than trying to detect blank-line game separators, which
 // also appear inside a single game's own header block.
-export function parseBroadcastPgn(pgnText: string, tournamentId: string): OlympiadGame[] {
+//
+// Async and yielding, not a plain synchronous loop: parseOneGame does a
+// full chess.js PGN load PLUS a second full move-by-move replay (to
+// snapshot a FEN per ply), and a section poll (useOlympiadSection) calls
+// this once per sub-broadcast, EVERY 10 SECONDS, for every sub-broadcast —
+// regardless of which single game is actually focused on screen. For a
+// real round (dozens of boards per sub-broadcast, 40-80 plies each) that
+// added up to thousands of chess.js move computations run back to back
+// with nothing yielding in between, which froze the main thread for the
+// whole burst. Since that's driven by a poll timer rather than anything
+// the viewer just did, it read as unexplained, "random" lag — dragging,
+// scrubbing through moves, even plain scrolling would all stall together,
+// because ALL of them run on the same blocked thread. Yielding every few
+// games turns one long freeze into many sub-frame chunks the browser can
+// interleave with rendering/input, at the same total cost.
+const YIELD_EVERY_N_GAMES = 4;
+const yieldToMainThread = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+export async function parseBroadcastPgn(pgnText: string, tournamentId: string): Promise<OlympiadGame[]> {
   const blocks = pgnText.split(/(?=^\[Event )/m).map((b) => b.trim()).filter(Boolean);
   const games: OlympiadGame[] = [];
-  for (const block of blocks) {
-    const game = parseOneGame(block, tournamentId);
+  for (let i = 0; i < blocks.length; i++) {
+    const game = parseOneGame(blocks[i], tournamentId);
     if (game) games.push(game);
+    if (i > 0 && i % YIELD_EVERY_N_GAMES === 0) await yieldToMainThread();
   }
   return games;
 }

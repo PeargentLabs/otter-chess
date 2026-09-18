@@ -3,25 +3,32 @@
 import { useEffect, useRef, useState } from 'react';
 import { Chessground } from 'chessground';
 import { Api } from 'chessground/api';
-import type { Key } from 'chessground/types';
+import type { Key, Dests } from 'chessground/types';
 import type { DrawShape, DrawBrushes } from 'chessground/draw';
+import { Chess } from 'chess.js';
+import type { Square } from 'chess.js';
 import 'chessground/assets/chessground.base.css';
 import 'chessground/assets/chessground.brown.css';
 import 'chessground/assets/chessground.cburnett.css';
 import type { PredictedMove } from '@/lib/play/types';
 import { ARROW_BRUSH_COLORS, formatSfPoints, formatClock } from '@/lib/play/chess-utils';
 import EvalBar from '@/components/play/EvalBar';
+import PromotionModal from '@/components/play/modals/PromotionModal';
 import { teamFlagUrl } from '@/lib/olympiad/flags';
 import { sideScore, formatScore } from '@/lib/olympiad/result';
 
 type SfTopMove = { san: string; evalCp: number; from: string; to: string };
 
-// The Olympiad main board — a spectator-only Chessground board (no piece
-// dragging; this is someone else's already-played game) with the same
-// Otter/Stockfish/played-move arrows and dual eval bars as /play's Analyze
-// mode. Owns its own Chessground instance and sizing, mirroring
-// BoardColumn.tsx's board wrapper and page.tsx's Chessground init/sync
-// effects, trimmed of every /play-only mode (match/editor/lobby).
+// The Olympiad main board — a Chessground board for spectating someone
+// else's already-played game, with the same Otter/Stockfish/played-move
+// arrows and dual eval bars as /play's Analyze mode. Piece dragging is
+// always on (legal moves only, via chess.js) so a viewer can explore "what
+// if" continuations from any position; onUserMove reports each such move
+// up to the parent, which owns tracking/unwinding that exploration branch
+// (the "Back to Live Board" control lives in OlympiadHistoryPanel, not
+// here). Owns its own Chessground instance and sizing, mirroring BoardColumn.tsx's board
+// wrapper and page.tsx's Chessground init/sync effects, trimmed of every
+// /play-only mode (match/editor/lobby).
 export default function MainBoard({
   fen,
   lastMove,
@@ -43,6 +50,7 @@ export default function MainBoard({
   whiteClockSeconds,
   blackClockSeconds,
   isLive,
+  onUserMove,
 }: {
   fen: string;
   lastMove?: [string, string];
@@ -70,14 +78,79 @@ export default function MainBoard({
   whiteClockSeconds: number | null;
   blackClockSeconds: number | null;
   isLive: boolean;
+  // Called after a manually dragged move is fully legal (and, for a
+  // promotion, resolved) — hands the parent the resulting FEN plus the
+  // move's UCI so it can track its own "exploration" branch off whatever
+  // position was on screen. MainBoard owns the chess.js validation,
+  // legal-dests computation and the promotion picker itself; the parent
+  // never sees an illegal attempt.
+  onUserMove: (newFen: string, moveUci: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const boardWrapperRef = useRef<HTMLDivElement>(null);
   const cgRef = useRef<Api | null>(null);
   const [boardPx, setBoardPx] = useState<number | null>(null);
+  const [pendingPromotion, setPendingPromotion] = useState<{ orig: string; dest: string; color: 'w' | 'b' } | null>(null);
 
-  // Initial Chessground instantiation — spectator-only board, so
-  // `movable` never enables dragging or reports destinations.
+  // Applies a fully-resolved (legal, promotion-decided) move — used both
+  // for ordinary moves and once a promotion piece has been picked. Always
+  // re-derives the "before" position from the CURRENT `fen` prop (not a
+  // stale closure) since this can fire well after the drag, once the
+  // promotion modal resolves.
+  const commitMove = (orig: string, dest: string, promotion: 'q' | 'r' | 'b' | 'n' | undefined) => {
+    try {
+      const c = new Chess(fen);
+      const moveObj = c.move({ from: orig as Square, to: dest as Square, promotion });
+      if (!moveObj) {
+        cgRef.current?.set({ fen });
+        return;
+      }
+      onUserMove(c.fen(), moveObj.from + moveObj.to + (moveObj.promotion || ''));
+    } catch (_) {
+      // Shouldn't happen — Chessground only offers drops chess.js already
+      // certified as legal dests — but revert the optimistic drag rather
+      // than leave the board showing an uncommitted position either way.
+      cgRef.current?.set({ fen });
+    }
+  };
+
+  // Chessground's own `after` event fires once a legal-per-dests move is
+  // dropped; a pawn landing on the back rank still needs a piece choice
+  // before it's actually legal, so that case detours through the modal
+  // instead of committing immediately.
+  const handleAfterMove = (orig: Key, dest: Key) => {
+    let c: Chess;
+    try {
+      c = new Chess(fen);
+    } catch (_) {
+      return;
+    }
+    const piece = c.get(orig as unknown as Square);
+    const isPromoRank = dest.endsWith('8') || dest.endsWith('1');
+    if (piece?.type === 'p' && isPromoRank) {
+      setPendingPromotion({ orig, dest, color: piece.color });
+      return;
+    }
+    commitMove(orig, dest, undefined);
+  };
+
+  const resolvePromotion = (piece: 'q' | 'r' | 'b' | 'n') => {
+    if (!pendingPromotion) return;
+    const { orig, dest } = pendingPromotion;
+    setPendingPromotion(null);
+    commitMove(orig, dest, piece);
+  };
+
+  const cancelPromotion = () => {
+    if (!pendingPromotion) return;
+    setPendingPromotion(null);
+    // Chessground already optimistically moved the pawn visually; revert.
+    cgRef.current?.set({ fen });
+  };
+
+  // Initial Chessground instantiation. Movable state (dests/color/events)
+  // is set here as an inert placeholder and kept live by the sync effect
+  // below, same pattern as the drawable autoShapes.
   useEffect(() => {
     if (containerRef.current && !cgRef.current) {
       const cg = Chessground(containerRef.current, {
@@ -85,7 +158,14 @@ export default function MainBoard({
         lastMove: lastMove as Key[] | undefined,
         orientation: isFlipped ? 'black' : 'white',
         viewOnly: false,
-        movable: { free: false, color: undefined, dests: new Map() },
+        movable: { free: false, color: undefined, dests: new Map(), events: {} },
+        // 0, not chessground's own default of 3px — a picked-up piece
+        // should snap to be centered under the cursor immediately on
+        // mousedown, not only once the drag has already moved a few
+        // pixels (the default also only drops to 0 automatically after
+        // the FIRST drag of the session via autoDistance, so the very
+        // first move always lagged without this).
+        draggable: { distance: 0 },
         drawable: {
           enabled: true,
           brushes: {
@@ -125,11 +205,53 @@ export default function MainBoard({
     requestAnimationFrame(() => cgRef.current?.redrawAll());
   }, [boardPx]);
 
-  // Keep Chessground in sync with the live position + arrows. One arrow
-  // per source, each its own brush, matching /play's Analyze mode exactly:
-  // Otter's own top pick, Stockfish's own top pick, and (when reviewing
-  // history instead of the live edge) the move that was actually played
-  // next.
+  // Keep Chessground's POSITION in sync — fen/orientation plus the legal
+  // destinations a manual drag is allowed to land on. Deliberately split
+  // from the arrows effect below: this one runs chess.js move generation,
+  // which only needs to happen when the position itself actually changes
+  // (a real move, a history step, or a dragged exploration move), not on
+  // every Otter/Stockfish tick — Stockfish alone can post many `info`
+  // lines a second while searching, and re-running move generation plus a
+  // full movable.dests rebuild on each one was exactly what made dragging
+  // feel laggy while analysis was streaming in.
+  useEffect(() => {
+    if (!cgRef.current) return;
+
+    // Board dragging is always on: this is a spectator board for someone
+    // else's already-played game, but nothing stops exploring "what if"
+    // continuations from any position, same as an analysis board — only
+    // real chess moves (per chess.js) are ever accepted as dests.
+    const dests: Dests = new Map();
+    let turnColor: 'white' | 'black' = 'white';
+    try {
+      const c = new Chess(fen);
+      turnColor = c.turn() === 'b' ? 'black' : 'white';
+      c.moves({ verbose: true }).forEach((m) => {
+        const orig = m.from as Key;
+        if (!dests.has(orig)) dests.set(orig, []);
+        dests.get(orig)!.push(m.to as Key);
+      });
+    } catch (_) {
+      // Malformed fen (shouldn't happen) — leave movable disabled.
+    }
+
+    cgRef.current.set({
+      fen,
+      lastMove: lastMove as Key[] | undefined,
+      orientation: isFlipped ? 'black' : 'white',
+      turnColor,
+      movable: { free: false, color: turnColor, dests, events: { after: handleAfterMove } },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fen, lastMove, isFlipped]);
+
+  // Keep the ANALYSIS ARROWS in sync — one per source, each its own brush,
+  // matching /play's Analyze mode exactly: Otter's own top pick,
+  // Stockfish's own top pick, and (when reviewing history instead of the
+  // live edge) the move that was actually played next. This is the effect
+  // that fires on every engine tick, so it does nothing beyond a cheap
+  // drawable.autoShapes set — no chess.js, no movable rebuild — and never
+  // touches the position Chessground is mid-drag on.
   useEffect(() => {
     if (!cgRef.current) return;
 
@@ -146,13 +268,8 @@ export default function MainBoard({
       finalShapes.push({ orig: playedMove.from as Key, dest: playedMove.to as Key, brush: 'played' });
     }
 
-    cgRef.current.set({
-      fen,
-      lastMove: lastMove as Key[] | undefined,
-      orientation: isFlipped ? 'black' : 'white',
-      drawable: { autoShapes: finalShapes },
-    });
-  }, [fen, lastMove, isFlipped, topMoves, sfTopMoves, playedMove]);
+    cgRef.current.set({ drawable: { autoShapes: finalShapes } });
+  }, [topMoves, sfTopMoves, playedMove]);
 
   const desktopBoardW = 'lg:w-[min(calc(100vw-830px),82vh,720px)]';
   const cardStyle = boardPx !== null ? { width: boardPx } : undefined;
@@ -293,6 +410,14 @@ export default function MainBoard({
           <span className="hidden min-[400px]:inline">Flip</span>
         </button>
       </div>
+
+      {pendingPromotion && (
+        <PromotionModal
+          pendingPromotion={pendingPromotion}
+          cancelPromotion={cancelPromotion}
+          resolvePromotion={resolvePromotion}
+        />
+      )}
     </div>
   );
 }

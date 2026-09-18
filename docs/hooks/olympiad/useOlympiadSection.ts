@@ -142,7 +142,8 @@ export function useOlympiadSection(tournamentIds: string[], roundNumber?: number
 
           const pgn = await fetchRoundPgnSnapshot(round.id);
           if (cancelled) return;
-          const games = parseBroadcastPgn(pgn, id);
+          const games = await parseBroadcastPgn(pgn, id);
+          if (cancelled) return;
           anyOk = true;
           const entry = { roundName: round!.name, games, asOf: Date.now() };
           setEntries((prev) => {

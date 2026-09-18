@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Chess } from 'chess.js';
 import type { Square } from 'chess.js';
@@ -170,7 +170,13 @@ function OlympiadWatchPageInner() {
   const gridTotalPages = Math.max(1, Math.ceil(filteredBoards.length / GRID_PAGE_SIZE));
   const clampedGridPage = Math.min(gridPage, gridTotalPages - 1);
   const gridPageStart = clampedGridPage * GRID_PAGE_SIZE;
-  const pagedBoards = filteredBoards.slice(gridPageStart, gridPageStart + GRID_PAGE_SIZE);
+  // Memoized, not a plain .slice() — MiniBoardStrip is memoized specifically
+  // so it can skip re-rendering on every clock tick / engine tick, which
+  // only works if this array's IDENTITY stays put across those ticks too.
+  const pagedBoards = useMemo(
+    () => filteredBoards.slice(gridPageStart, gridPageStart + GRID_PAGE_SIZE),
+    [filteredBoards, gridPageStart],
+  );
 
   const focusedGame = useMemo(() => {
     if (focusedBoardKey) {
@@ -205,6 +211,75 @@ function OlympiadWatchPageInner() {
     isAtLiveEdge,
   } = useFocusedGame(focusedGame);
 
+  // A manually dragged-out "what if" branch off whatever position is on
+  // screen (live tip or reviewed history) — kept entirely separate from
+  // useFocusedGame's own real-move navigation above. `explorationFen` is
+  // the board actually shown once set; `explorationUcis` accumulates the
+  // moves made so engines get a real history window instead of just the
+  // bare final position.
+  const [explorationFen, setExplorationFen] = useState<string | null>(null);
+  const [explorationLastMove, setExplorationLastMove] = useState<[string, string] | null>(null);
+  const [explorationUcis, setExplorationUcis] = useState<string[]>([]);
+  const isExploring = explorationFen !== null;
+
+  const clearExploration = () => {
+    setExplorationFen(null);
+    setExplorationLastMove(null);
+    setExplorationUcis([]);
+  };
+
+  // Switching to a different focused game always discards any in-progress
+  // exploration of the previous one.
+  useEffect(() => {
+    clearExploration();
+  }, [focusedGame?.boardKey]);
+
+  const handleUserMove = (newFen: string, moveUci: string) => {
+    setExplorationFen(newFen);
+    setExplorationLastMove([moveUci.slice(0, 2), moveUci.slice(2, 4)]);
+    setExplorationUcis((prev) => [...prev, moveUci]);
+  };
+
+  // A dedicated wrapper for each real-history navigation action — jumping
+  // around the actual game while a hand-dragged exploration is active would
+  // otherwise leave the board silently stuck on the exploration position, so
+  // any deliberate history navigation first discards it.
+  //
+  // Built via ref-indirection (same trick as navRef below) rather than as
+  // plain closures: useFocusedGame's goToMove/stepMove/jumpToStart/jumpToEnd
+  // and clearExploration are all brand-new functions every render, so a
+  // naive wrapper would be too — and OlympiadHistoryPanel is memoized
+  // specifically to skip re-rendering its ~80-button move grid on every
+  // clock/engine tick, which a fresh function identity on every one of
+  // those ticks would silently defeat. useCallback with an empty dep array
+  // keeps these five identities fixed for the component's whole lifetime;
+  // the ref underneath always holds whichever real implementation is
+  // current, so behavior is unaffected.
+  const focusedGameNavRef = useRef({ goToMove, stepMove, jumpToStart, jumpToEnd, clearExploration });
+  useEffect(() => {
+    focusedGameNavRef.current = { goToMove, stepMove, jumpToStart, jumpToEnd, clearExploration };
+  });
+  const goToMoveAndClear = useCallback((idx: number) => {
+    focusedGameNavRef.current.clearExploration();
+    focusedGameNavRef.current.goToMove(idx);
+  }, []);
+  const stepMoveAndClear = useCallback((direction: 1 | -1) => {
+    focusedGameNavRef.current.clearExploration();
+    focusedGameNavRef.current.stepMove(direction);
+  }, []);
+  const jumpToStartAndClear = useCallback(() => {
+    focusedGameNavRef.current.clearExploration();
+    focusedGameNavRef.current.jumpToStart();
+  }, []);
+  const jumpToEndAndClear = useCallback(() => {
+    focusedGameNavRef.current.clearExploration();
+    focusedGameNavRef.current.jumpToEnd();
+  }, []);
+
+  // What the board / engines actually look at — the exploration branch's
+  // position once one exists, otherwise whatever useFocusedGame is showing.
+  const boardFen = explorationFen ?? displayFen;
+
   // Keyboard move navigation — same convention as /play's Analyze mode
   // (ArrowRight/Left step one ply, ArrowUp/Down jump to the start/live
   // edge). OlympiadHistoryPanel's own footer already advertises this; it
@@ -217,9 +292,9 @@ function OlympiadWatchPageInner() {
   // updated every render sidesteps both: the effect below only actually
   // re-attaches when the focused BOARD changes, but the handler it
   // installed always calls through to whichever closures are current.
-  const navRef = useRef({ stepMove, jumpToStart, jumpToEnd });
+  const navRef = useRef({ stepMove: stepMoveAndClear, jumpToStart: jumpToStartAndClear, jumpToEnd: jumpToEndAndClear });
   useEffect(() => {
-    navRef.current = { stepMove, jumpToStart, jumpToEnd };
+    navRef.current = { stepMove: stepMoveAndClear, jumpToStart: jumpToStartAndClear, jumpToEnd: jumpToEndAndClear };
   });
   useEffect(() => {
     if (!focusedGame) return;
@@ -672,6 +747,11 @@ function OlympiadWatchPageInner() {
   // effect depends on this array by reference — see the same note on
   // displayMoves in useFocusedGame.ts.
   const historyUcis = useMemo(() => displayMoves.map((m) => m.uci), [displayMoves]);
+  // The engines' own history window follows the exploration branch too —
+  // the real moves up to the branch point, plus whatever's been hand-dragged
+  // on top of it, so a "what if" continuation gets the same history
+  // conditioning a real one would.
+  const effectiveHistoryUcis = useMemo(() => [...historyUcis, ...explorationUcis], [historyUcis, explorationUcis]);
 
   // Redirect both engines to whatever position is currently displayed —
   // the live tip normally, or an earlier ply when reviewing history.
@@ -688,40 +768,40 @@ function OlympiadWatchPageInner() {
   // 'go', not by delaying when either one starts.
   useEffect(() => {
     if (!focusedGame) return;
-    currentFenRef.current = displayFen;
-    activeTurnRef.current = displayFen.split(' ')[1] === 'b' ? 'b' : 'w';
+    currentFenRef.current = boardFen;
+    activeTurnRef.current = boardFen.split(' ')[1] === 'b' ? 'b' : 'w';
     ignoreSearchLinesRef.current = true;
     sfMultiPvBufferRef.current.clear();
     setSfTopMoves([]);
 
     if (stockfishRef.current) {
       stockfishRef.current.postMessage('stop');
-      stockfishRef.current.postMessage(`position fen ${displayFen}`);
+      stockfishRef.current.postMessage(`position fen ${boardFen}`);
       stockfishRef.current.postMessage('go depth 13');
     }
 
     if (modelLoaded) {
-      const activeClock = (displayFen.split(' ')[1] === 'b' ? blackClockSeconds : whiteClockSeconds);
+      const activeClock = (boardFen.split(' ')[1] === 'b' ? blackClockSeconds : whiteClockSeconds);
       const clockFraction = passClockToOtter ? clockToFraction(activeClock) : OLYMPIAD_DEFAULT_CLOCK_FRACTION;
-      runOtterInference(displayFen, historyUcis, whiteElo, blackElo, clockFraction);
+      runOtterInference(boardFen, effectiveHistoryUcis, whiteElo, blackElo, clockFraction);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayFen, modelLoaded, focusedGame?.boardKey, passClockToOtter, passHistoryToOtter]);
+  }, [boardFen, modelLoaded, focusedGame?.boardKey, passClockToOtter, passHistoryToOtter]);
 
   const displayChess = useMemo(() => {
     try {
-      return new Chess(displayFen);
+      return new Chess(boardFen);
     } catch (_) {
       return null;
     }
-  }, [displayFen]);
+  }, [boardFen]);
 
   const { ratingCurveData, ratingCurveLoading, ratingCurveHoverIdx, setRatingCurveHoverIdx } = useRatingCurve({
     otterWorkerRef,
     modelLoaded,
     isAnalyzeMode: true,
     game: displayChess,
-    historyMoves: historyUcis,
+    historyMoves: effectiveHistoryUcis,
     analyzeWhiteElo: whiteElo,
     analyzeBlackElo: blackElo,
     analyzeHistoryK: 20,
@@ -740,7 +820,7 @@ function OlympiadWatchPageInner() {
     evaluatePositionOnce,
   });
 
-  const turn: 'w' | 'b' = displayFen.split(' ')[1] === 'b' ? 'b' : 'w';
+  const turn: 'w' | 'b' = boardFen.split(' ')[1] === 'b' ? 'b' : 'w';
   // When the focused game's own tournament hasn't reported a real poll
   // timestamp yet (e.g. isDemo, or genuinely still loading), Date.now() is
   // the only sane fallback — it just means "assume this reading is fresh,"
@@ -750,7 +830,7 @@ function OlympiadWatchPageInner() {
     whiteClockSeconds,
     blackClockSeconds,
     turn,
-    isAtLiveEdge && focusedGame?.result === '*',
+    !isExploring && isAtLiveEdge && focusedGame?.result === '*',
     clockAsOf,
   );
 
@@ -764,10 +844,12 @@ function OlympiadWatchPageInner() {
           <OlympiadHistoryPanel
             moves={focusedGame.moves}
             currentMoveIdx={currentMoveIdx}
-            goToMove={goToMove}
-            jumpToStart={jumpToStart}
-            jumpToEnd={jumpToEnd}
-            stepMove={stepMove}
+            goToMove={goToMoveAndClear}
+            jumpToStart={jumpToStartAndClear}
+            jumpToEnd={jumpToEndAndClear}
+            stepMove={stepMoveAndClear}
+            showBackToLive={isExploring || !isAtLiveEdge}
+            onBackToLive={jumpToEndAndClear}
           />
 
           <div className="order-1 lg:order-2 shrink-0 lg:flex-1 flex flex-col min-h-0 min-w-0 lg:overflow-y-auto">
@@ -807,13 +889,14 @@ function OlympiadWatchPageInner() {
             )}
 
             <MainBoard
-              fen={displayFen}
-              lastMove={lastMove}
+              fen={boardFen}
+              lastMove={explorationLastMove ?? lastMove}
               isFlipped={isFlipped}
               setIsFlipped={setIsFlipped}
               topMoves={enginesReady ? topMoves : []}
               sfTopMoves={enginesReady ? sfTopMoves : []}
-              playedMove={nextPlayedMove ? { from: nextPlayedMove.from, to: nextPlayedMove.to } : null}
+              playedMove={!isExploring && nextPlayedMove ? { from: nextPlayedMove.from, to: nextPlayedMove.to } : null}
+              onUserMove={handleUserMove}
               otterWhitePct={otterWhitePct}
               otterBlackPct={otterBlackPct}
               stockfishEvalPct={stockfishEvalPct}
@@ -826,7 +909,7 @@ function OlympiadWatchPageInner() {
               result={focusedGame.result}
               whiteClockSeconds={liveWhiteClock}
               blackClockSeconds={liveBlackClock}
-              isLive={!isDemo && isAtLiveEdge && focusedGame.result === '*'}
+              isLive={!isDemo && !isExploring && isAtLiveEdge && focusedGame.result === '*'}
             />
 
             <div className="mt-3">

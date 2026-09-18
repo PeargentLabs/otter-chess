@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { Chess } from 'chess.js';
+import type { Square } from 'chess.js';
 
 // Manages both Stockfish workers used by /play:
 //  - the "live" one (returned via `initStockfishWorker`/`stockfishRef`), which
@@ -29,6 +30,70 @@ export function useStockfish(refs: {
   const [sfTopMoves, setSfTopMoves] = useState<{ san: string; evalCp: number; from: string; to: string }[]>([]);
   const sfMultiPvBufferRef = useRef<Map<number, { move: string; scoreCp: number }>>(new Map());
   const [fenScores, setFenScores] = useState<Record<string, number>>({});
+
+  // Stockfish posts one `info ... multipv` line per candidate PER DEPTH
+  // while searching — often dozens a second at higher depths. Each line
+  // used to synchronously re-derive the whole displayed list right there
+  // in the worker's onmessage handler: sorting the multipv buffer AND
+  // re-parsing every candidate move through chess.js (a fresh `new
+  // Chess(fen)` + `.move()` per candidate) AND committing React state —
+  // all real main-thread work, repeated on every single message. That's
+  // frequent enough to visibly compete with the main thread for frame
+  // budget, making anything interactively animated (like dragging a piece
+  // on the board) feel laggy while analysis is streaming in.
+  //
+  // The fix is to defer ALL of it, not just the state commit: the message
+  // handler below only ever touches the plain Map buffer (cheap), and
+  // this flush — the sort + chess.js parsing + setState — runs at most
+  // once per animation frame, no matter how many messages arrived in
+  // between. A human can't tell 60 real-engine-updates/sec from "however
+  // fast Stockfish actually posts them," so nothing about the live feel
+  // is lost; the browser just gets its frame budget back.
+  // The eval bar / fenScores also used to commit on every rank-1 message —
+  // same frequency problem, just without the chess.js cost. Piggybacked on
+  // the same per-frame flush below rather than given their own rAF, since
+  // they arrive from the same messages and there's no reason to schedule
+  // twice.
+  const pendingEvalPctRef = useRef<number | null>(null);
+  const pendingFenScoreRef = useRef<{ fen: string; score: number } | null>(null);
+  const sfFlushRafRef = useRef<number | null>(null);
+  const scheduleSfFlush = () => {
+    if (sfFlushRafRef.current !== null) return;
+    sfFlushRafRef.current = requestAnimationFrame(() => {
+      sfFlushRafRef.current = null;
+
+      if (pendingEvalPctRef.current !== null) {
+        setStockfishEvalPct(pendingEvalPctRef.current);
+        pendingEvalPctRef.current = null;
+      }
+      if (pendingFenScoreRef.current) {
+        const { fen, score } = pendingFenScoreRef.current;
+        pendingFenScoreRef.current = null;
+        setFenScores(prev => ({ ...prev, [fen]: score }));
+      }
+
+      const baseFen = currentFenRef.current;
+      if (!baseFen) return;
+      const ranked = Array.from(sfMultiPvBufferRef.current.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([, v]) => v);
+      try {
+        const sanRanked = ranked.map(({ move, scoreCp }) => {
+          const c = new Chess(baseFen);
+          const mv = c.move({
+            from: move.slice(0, 2) as Square,
+            to: move.slice(2, 4) as Square,
+            promotion: move.length > 4 ? (move.slice(4) as 'q' | 'r' | 'b' | 'n') : undefined,
+          });
+          return mv ? { san: mv.san, evalCp: scoreCp, from: mv.from, to: mv.to } : null;
+        }).filter((m): m is NonNullable<typeof m> => m !== null);
+        setSfTopMoves(sanRanked);
+      } catch (_) {
+        // keep the previous list rather than flashing empty on a
+        // transient parse failure
+      }
+    });
+  };
 
   // Dedicated background worker for the rating-curve sweep's move-quality
   // classification, fully decoupled from the live eval bar / comparison
@@ -93,43 +158,23 @@ export function useStockfish(refs: {
           if (rank === 1) {
             if (isMate) {
               const isWhiteWinning = scoreVal > 0;
-              setStockfishEvalPct(isWhiteWinning ? 100 : 0);
+              pendingEvalPctRef.current = isWhiteWinning ? 100 : 0;
             } else {
               const maxCp = 400;
               const bounded = Math.max(-maxCp, Math.min(maxCp, scoreVal));
-              const pct = Math.round(((bounded + maxCp) / (maxCp * 2)) * 100);
-              setStockfishEvalPct(pct);
+              pendingEvalPctRef.current = Math.round(((bounded + maxCp) / (maxCp * 2)) * 100);
             }
 
             const currentFen = currentFenRef.current;
             if (currentFen) {
-              setFenScores(prev => ({ ...prev, [currentFen]: scoreVal }));
+              pendingFenScoreRef.current = { fen: currentFen, score: scoreVal };
             }
           }
 
           // Live-commit whatever ranks have reported so far this depth pass
-          // (not necessarily all 4 yet) as the displayed candidate list.
-          const baseFen = currentFenRef.current;
-          if (baseFen) {
-            const ranked = Array.from(sfMultiPvBufferRef.current.entries())
-              .sort((a, b) => a[0] - b[0])
-              .map(([, v]) => v);
-            try {
-              const sanRanked = ranked.map(({ move, scoreCp }) => {
-                const c = new Chess(baseFen);
-                const mv = c.move({
-                  from: move.slice(0, 2) as any,
-                  to: move.slice(2, 4) as any,
-                  promotion: move.length > 4 ? (move.slice(4) as any) : undefined,
-                });
-                return mv ? { san: mv.san, evalCp: scoreCp, from: mv.from, to: mv.to } : null;
-              }).filter((m): m is NonNullable<typeof m> => m !== null);
-              setSfTopMoves(sanRanked);
-            } catch (_) {
-              // keep the previous list rather than flashing empty on a
-              // transient parse failure
-            }
-          }
+          // (not necessarily all 4 yet) as the displayed candidate list —
+          // deferred to the next animation frame; see scheduleSfFlush.
+          if (currentFenRef.current) scheduleSfFlush();
         }
       };
 
