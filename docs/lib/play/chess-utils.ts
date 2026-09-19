@@ -190,6 +190,17 @@ export const formatSfPoints = (raw: number | undefined): string => {
   return (raw > 0 ? '+' : '') + (raw / 100).toFixed(2);
 };
 
+// Otter's value head, expressed in White's perspective (see
+// getOtterWhiteScore in page.tsx), formatted to look like formatSfPoints'
+// pawns-style pill text above — e.g. "+0.62" — rather than a win %. Unlike
+// Stockfish's centipawns this is always bounded to [-1, 1] (it's an
+// expected-score estimate, P(win) - P(loss), not a depth-searched
+// evaluation), so there's no mate-score case to handle here.
+export const formatOtterScore = (score: number | undefined): string => {
+  if (score === undefined) return '...';
+  return (score > 0 ? '+' : '') + score.toFixed(2);
+};
+
 export const classifyDrop = (drop: number): { label: string; color: string } => {
   if (drop > 200) return { label: 'Blunder', color: '#F43F5E' };
   if (drop > 100) return { label: 'Mistake', color: '#FB923C' };

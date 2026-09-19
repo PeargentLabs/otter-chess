@@ -37,8 +37,8 @@ export default function MainBoard({
   topMoves,
   sfTopMoves,
   playedMove,
-  otterWhitePct,
-  otterBlackPct,
+  otterWinPct,
+  otterScoreText,
   stockfishEvalPct,
   whiteLabel,
   blackLabel,
@@ -59,14 +59,10 @@ export default function MainBoard({
   topMoves: PredictedMove[];
   sfTopMoves: SfTopMove[];
   playedMove?: { from: string; to: string } | null;
-  // Two independent readings rather than one turn-flipped number — Otter's
-  // value head isn't fully consistent between "White to move" and "Black
-  // to move" framings of the same position (confirmed against real
-  // finished games), so each is shown as its own bar, labeled by which
-  // query answered it, rather than the app picking one truth and hiding
-  // the disagreement.
-  otterWhitePct: number;
-  otterBlackPct: number;
+  // Single White-perspective eval bar, matching /play's BoardColumn — see
+  // getOtterWhiteScore's derivation in page.tsx.
+  otterWinPct: number;
+  otterScoreText: string;
   stockfishEvalPct: number;
   whiteLabel: string;
   blackLabel: string;
@@ -350,30 +346,15 @@ export default function MainBoard({
       {renderCard(topLabel, topTeam, topElo, topScore, topClock, topIsBlack)}
 
       <div className="flex items-center justify-center gap-2 lg:gap-4 relative w-full lg:w-auto">
-        <div className="flex gap-0.5 lg:gap-1">
-          <EvalBar
-            pct={otterWhitePct}
-            color="#7CB342"
-            text={`${otterWhitePct.toFixed(1)}%`}
-            title={`Otter, queried as White to move: ${otterWhitePct}%`}
-            isFlipped={isFlipped}
-            isAnalyzeMode={true}
-            boardPx={boardPx}
-          />
-          {/* Anchored to wherever Black physically sits, which is the
-              OPPOSITE edge from the White bar above — passing the inverted
-              isFlipped is enough since that's the only thing EvalBar uses
-              it for (see components/play/EvalBar.tsx). */}
-          <EvalBar
-            pct={otterBlackPct}
-            color="#7CB342"
-            text={`${otterBlackPct.toFixed(1)}%`}
-            title={`Otter, queried as Black to move: ${otterBlackPct}%`}
-            isFlipped={!isFlipped}
-            isAnalyzeMode={true}
-            boardPx={boardPx}
-          />
-        </div>
+        <EvalBar
+          pct={otterWinPct}
+          color="#7CB342"
+          text={otterScoreText}
+          title={`Otter eval: ${otterScoreText}`}
+          isFlipped={isFlipped}
+          isAnalyzeMode={true}
+          boardPx={boardPx}
+        />
 
         <div
           ref={boardWrapperRef}

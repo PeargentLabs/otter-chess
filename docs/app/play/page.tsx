@@ -19,6 +19,7 @@ import {
   mirrorMove,
   formatUciAsSan,
   formatSfPoints,
+  formatOtterScore,
   classifyDrop,
   getBaseSeconds,
   getIncrementSeconds,
@@ -130,6 +131,19 @@ export default function PlayPage() {
 
   // Model Outputs
   const [winProbability, setWinProbability] = useState<number>(0.0);
+  // Whoever `winProbability` was actually computed FOR — i.e. c.turn() at
+  // the moment runModelInference resolved it (see setWinProbabilityTurn's
+  // call site below). getOtterWhiteScore needs this rather than reading
+  // `game.turn()` live: runModelInference is async, and playModelMove
+  // (Otter's own auto-move) applies the move and flips `game`'s turn
+  // BEFORE that move's own inference resolves. In that window, live
+  // game.turn() already points at the NEXT mover while winProbability
+  // still holds the PREVIOUS mover's reading — sign-flipping a stale value
+  // against a fresh turn inverts the bar (shows the side that just lost
+  // ground as winning) until the fresh inference lands. Most visible
+  // during the Automated Otter Game Loop, where moves land back-to-back
+  // fast enough that the flash barely settles between them.
+  const [winProbabilityTurn, setWinProbabilityTurn] = useState<'w' | 'b'>('w');
   const [topMoves, setTopMoves] = useState<PredictedMove[]>([]);
   const [auxMovingPiece, setAuxMovingPiece] = useState<string>("-");
   const [auxCapturedPiece, setAuxCapturedPiece] = useState<string>("-");
@@ -1267,11 +1281,13 @@ export default function PlayPage() {
   // Otter's own subjective win probability, regardless of whose turn it
   // currently is. `winProbability` (range -1..+1) is computed each move from
   // the perspective of the active mover, so it needs flipping when it isn't
-  // currently Otter's turn.
+  // currently Otter's turn. Flips against winProbabilityTurn (the mover
+  // winProbability actually belongs to), not live game.turn() — see
+  // winProbabilityTurn's declaration for why that live read is racy.
   const getOtterWinProbability = (): number => {
     if (!game) return 0;
     const otterColor = playerColor === 'w' ? 'b' : 'w';
-    return game.turn() === otterColor ? winProbability : -winProbability;
+    return winProbabilityTurn === otterColor ? winProbability : -winProbability;
   };
 
   const offerDraw = () => {
@@ -2030,8 +2046,10 @@ export default function PlayPage() {
         return null;
       }
 
-      // Set win evaluation
+      // Set win evaluation — c.turn() captured alongside the value it
+      // belongs to (see winProbabilityTurn's declaration for why).
       setWinProbability(valuePred as number);
+      setWinProbabilityTurn(c.turn());
 
       // Filter legal moves
       const legalMoves = c.history({ verbose: true }).length > 0
@@ -2355,14 +2373,20 @@ export default function PlayPage() {
     }
   }
 
-  const getOtterWhiteWinPct = (): number => {
-    if (!game) return 50;
-    const activeTurn = game.turn();
-    const normalized = (winProbability + 1) / 2;
-    const whiteWinPct = activeTurn === 'w' ? normalized : (1 - normalized);
-    return Math.round(whiteWinPct * 100);
+  // winProbability is the value head's raw output for whoever is on move —
+  // trained via MSE against +1 (mover wins) / -1 (mover loses) / 0 (draw),
+  // it's already an estimate of P(mover wins) - P(mover loses), i.e. a
+  // Stockfish-shaped signed score, just expressed in the mover's frame
+  // rather than White's. Flip it to White's frame instead of squashing it
+  // into a 0-100% "win chance" — that's the only conversion needed, since
+  // there's no separate white-win/black-win probability to subtract.
+  const getOtterWhiteScore = (): number => {
+    if (!game) return 0;
+    // winProbabilityTurn, not game.turn() — see its declaration above.
+    return winProbabilityTurn === 'w' ? winProbability : -winProbability;
   };
-  const otterWinPct = getOtterWhiteWinPct();
+  const otterWhiteScore = getOtterWhiteScore();
+  const otterWinPct = Math.round(((otterWhiteScore + 1) / 2) * 100);
 
   const whitePct = stockfishEvalPct;
 
@@ -2477,6 +2501,7 @@ export default function PlayPage() {
         handleBoardMouseUp={handleBoardMouseUp}
         boardPx={boardPx}
         otterWinPct={otterWinPct}
+        otterScoreText={formatOtterScore(otterWhiteScore)}
         whitePct={whitePct}
         sfTopMoves={sfTopMoves}
       />

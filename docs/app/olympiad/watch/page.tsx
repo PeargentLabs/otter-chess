@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { Chess } from 'chess.js';
 import type { Square } from 'chess.js';
 import type { PredictedMove } from '@/lib/play/types';
-import { boardToTensor, mirrorMove, mirrorSquare, withOppositeTurn } from '@/lib/play/chess-utils';
+import { boardToTensor, mirrorMove, mirrorSquare, formatOtterScore } from '@/lib/play/chess-utils';
 import { useStockfish } from '@/hooks/play/useStockfish';
 import { useOtterWorker } from '@/hooks/play/useOtterWorker';
 import { useRatingCurve } from '@/hooks/play/useRatingCurve';
@@ -353,21 +353,30 @@ function OlympiadWatchPageInner() {
   // Otter output state (mirrors the subset of /play's page-level state that
   // AnalyzeSidebar's extracted panels read).
   const [topMoves, setTopMoves] = useState<PredictedMove[]>([]);
-  // Otter's own raw, mover-relative reading — feeds IntuitionPanel's plain
-  // signed number via OlympiadStatsPanel, distinct from the two labeled
-  // White/Black eval bars below.
+  // Otter's own raw, mover-relative reading (P(mover wins) - P(mover
+  // loses), from the value head trained on game results — see
+  // formatOtterScore's definition). Feeds IntuitionPanel's plain signed
+  // number via OlympiadStatsPanel, AND the single White-perspective eval
+  // bar below (see otterWhiteScore near the `turn` derivation), by sign-
+  // flipping it when Black is on move — same conversion /play uses,
+  // rather than querying the position a second time with the other side
+  // to move. Note: that second, opposite-turn query previously backed a
+  // two-bar display here and is not perfectly consistent with this one
+  // (Otter's value head isn't fully symmetric between "White to move" and
+  // "Black to move" framings of the same position); a single derived bar
+  // trades away surfacing that disagreement for a Stockfish-shaped display
+  // matching /play.
   const [winProbability, setWinProbability] = useState(0);
-  // Two separate readings instead of one flipped-based-on-turn number —
-  // Otter's value head turns out not to be fully consistent between "White
-  // to move" and "Black to move" framings of the same real game trajectory
-  // (confirmed by direct testing against real finished games), so forcing
-  // both into a single number made the bar swing depending purely on whose
-  // turn it was, not on what was actually happening in the game. Showing
-  // both readings side by side is honest about that instead of hiding it
-  // behind a transform, and lets each stay pinned to its own label —
-  // "White" always means the White-to-move query's own answer.
-  const [otterWhitePct, setOtterWhitePct] = useState(50);
-  const [otterBlackPct, setOtterBlackPct] = useState(50);
+  // Whoever winProbability was actually computed for — i.e. c.turn() at
+  // the moment runOtterInference resolved it. Needed because the sign
+  // flip below must not read live `turn` (derived from `boardFen`):
+  // runOtterInference is async, and once a new move lands `boardFen` (and
+  // therefore `turn`) updates before this move's own inference resolves,
+  // so a live-turn flip briefly applies the WRONG side's flip to a value
+  // computed for the position before it — inverting the bar until the
+  // fresh inference lands. See /play's identical fix (winProbabilityTurn
+  // in app/play/page.tsx) for the fuller writeup.
+  const [winProbabilityTurn, setWinProbabilityTurn] = useState<'w' | 'b'>('w');
   const [auxMovingPiece, setAuxMovingPiece] = useState('-');
   const [auxCapturedPiece, setAuxCapturedPiece] = useState('-');
   const [auxCheckProb, setAuxCheckProb] = useState('-');
@@ -512,47 +521,6 @@ function OlympiadWatchPageInner() {
   const clockToFraction = (clockSeconds: number | null) =>
     clockSeconds !== null ? Math.max(0, Math.min(1, clockSeconds / OLYMPIAD_CLOCK_BASE_SECONDS)) : OLYMPIAD_DEFAULT_CLOCK_FRACTION;
 
-  // The secondary (non-mover) side's bar — see the call site in
-  // runOtterInference below for why this is split out and fire-and-forget
-  // rather than awaited inline: it must never delay the move arrows/aux
-  // stats, which only need the FIRST query's already-resolved data.
-  const runOtterOppositeInference = async (
-    fenStr: string,
-    realIsWhiteTurn: boolean,
-    whiteElo: number,
-    blackElo: number,
-    clockFraction: number,
-    historyIds: BigInt64Array,
-    historyMask: Uint8Array,
-    currentSeq: number,
-  ) => {
-    const oppositeFen = withOppositeTurn(fenStr);
-    if (!oppositeFen) return;
-    try {
-      const oc = new Chess(oppositeFen);
-      const oppBoardData = boardToTensor(oc);
-      const oppIsWhiteTurn = !realIsWhiteTurn;
-      const oppActiveElo = eloToBucket(oppIsWhiteTurn ? whiteElo : blackElo);
-      const oppOpponentElo = eloToBucket(oppIsWhiteTurn ? blackElo : whiteElo);
-      const oppResult = await callOtterWorker('live', {
-        board: oppBoardData,
-        historyIds,
-        historyMask,
-        activeElo: oppActiveElo,
-        opponentElo: oppOpponentElo,
-        tc: OLYMPIAD_TC_BUCKET,
-        clock: [clockFraction, 0.0],
-      }, true);
-      if (currentSeq !== lastInferenceSeqRef.current) return;
-      const oppPct = Math.round(((oppResult.valuePred as number) + 1) / 2 * 100);
-      if (oppIsWhiteTurn) setOtterWhitePct(oppPct); else setOtterBlackPct(oppPct);
-    } catch (_) {
-      // This exact arrangement is illegal with the other side to move (e.g.
-      // it would leave the real mover in check) — leave that side's bar
-      // showing its last known value rather than guessing.
-    }
-  };
-
   // Otter inference for the currently displayed position — adapted from
   // /play's runModelInference (app/play/page.tsx), with Analyze-mode's
   // rating-bracket/time-format sliders replaced by the focused game's real
@@ -599,24 +567,12 @@ function OlympiadWatchPageInner() {
 
       if (currentSeq !== lastInferenceSeqRef.current) return;
 
+      // Mover-relative reading (P(mover wins) - P(mover loses)) — the
+      // single White-perspective eval bar (see otterWhiteScore near the
+      // `turn` derivation) sign-flips this when Black is on move, the same
+      // conversion /play uses. No second, opposite-turn query needed.
       setWinProbability(valuePred as number);
-
-      // This query already answered "how does Otter see this for whoever's
-      // actually moving" — when isWhiteTurn, that IS the White bar's own
-      // reading directly (no flip needed, since the value head already
-      // answers from the mover's own perspective).
-      const realPct = Math.round(((valuePred as number) + 1) / 2 * 100);
-      if (isWhiteTurn) setOtterWhitePct(realPct); else setOtterBlackPct(realPct);
-
-      // The OTHER bar needs a second, hypothetical query treating this same
-      // arrangement as if the other side were to move (see
-      // withOppositeTurn) — kicked off here but NOT awaited: the move
-      // arrows/aux stats below only need the query that already resolved
-      // above, so waiting on a second full model pass before computing them
-      // was pure added latency on every single navigation, doubling how
-      // long clicking through moves took to feel responsive. It updates
-      // the other bar whenever it finishes instead.
-      runOtterOppositeInference(fenStr, isWhiteTurn, whiteElo, blackElo, clockFraction, historyIds, historyMask, currentSeq);
+      setWinProbabilityTurn(c.turn());
 
       const isBlackTurn = c.turn() === 'b';
       const legalUcis = c.moves({ verbose: true }).map((m) => m.from + m.to + (m.promotion || ''));
@@ -821,6 +777,13 @@ function OlympiadWatchPageInner() {
   });
 
   const turn: 'w' | 'b' = boardFen.split(' ')[1] === 'b' ? 'b' : 'w';
+  // Single Stockfish-shaped eval bar: winProbability is already
+  // P(mover wins) - P(mover loses) (see its declaration above), so a sign
+  // flip to White's frame is the only conversion needed — same as /play's
+  // getOtterWhiteScore. Flips against winProbabilityTurn, not the live
+  // `turn` above — see winProbabilityTurn's declaration for why.
+  const otterWhiteScore = winProbabilityTurn === 'w' ? winProbability : -winProbability;
+  const otterWinPct = Math.round(((otterWhiteScore + 1) / 2) * 100);
   // When the focused game's own tournament hasn't reported a real poll
   // timestamp yet (e.g. isDemo, or genuinely still loading), Date.now() is
   // the only sane fallback — it just means "assume this reading is fresh,"
@@ -897,8 +860,8 @@ function OlympiadWatchPageInner() {
               sfTopMoves={enginesReady ? sfTopMoves : []}
               playedMove={!isExploring && nextPlayedMove ? { from: nextPlayedMove.from, to: nextPlayedMove.to } : null}
               onUserMove={handleUserMove}
-              otterWhitePct={otterWhitePct}
-              otterBlackPct={otterBlackPct}
+              otterWinPct={otterWinPct}
+              otterScoreText={formatOtterScore(otterWhiteScore)}
               stockfishEvalPct={stockfishEvalPct}
               whiteLabel={nameWithTitle(focusedGame.white, focusedGame.whiteTitle)}
               blackLabel={nameWithTitle(focusedGame.black, focusedGame.blackTitle)}

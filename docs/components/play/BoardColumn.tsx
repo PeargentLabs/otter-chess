@@ -30,6 +30,7 @@ export default function BoardColumn({
   handleBoardMouseUp,
   boardPx,
   otterWinPct,
+  otterScoreText,
   whitePct,
   sfTopMoves,
 }: {
@@ -53,6 +54,7 @@ export default function BoardColumn({
   handleBoardMouseUp: (e: React.MouseEvent<HTMLDivElement>) => void;
   boardPx: number | null;
   otterWinPct: number;
+  otterScoreText: string;
   whitePct: number;
   sfTopMoves: SfTopMove[];
 }) {
@@ -164,8 +166,8 @@ export default function BoardColumn({
         <EvalBar
           pct={otterWinPct}
           color="#7CB342"
-          text={`${otterWinPct.toFixed(1)}%`}
-          title={`Otter Win Prob: ${otterWinPct}%`}
+          text={otterScoreText}
+          title={`Otter eval: ${otterScoreText}`}
           isFlipped={isFlipped}
           isAnalyzeMode={isAnalyzeMode}
           boardPx={boardPx}
