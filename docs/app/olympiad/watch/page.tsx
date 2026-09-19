@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { Chess } from 'chess.js';
 import type { Square } from 'chess.js';
 import type { PredictedMove } from '@/lib/play/types';
-import { boardToTensor, mirrorMove, mirrorSquare, formatOtterScore } from '@/lib/play/chess-utils';
+import { boardToTensor, mirrorMove, mirrorSquare, withOppositeTurn, combineWhiteBlackScores } from '@/lib/play/chess-utils';
 import { useStockfish } from '@/hooks/play/useStockfish';
 import { useOtterWorker } from '@/hooks/play/useOtterWorker';
 import { useRatingCurve } from '@/hooks/play/useRatingCurve';
@@ -354,9 +354,9 @@ function OlympiadWatchPageInner() {
   // AnalyzeSidebar's extracted panels read).
   const [topMoves, setTopMoves] = useState<PredictedMove[]>([]);
   // Otter's own raw, mover-relative reading (P(mover wins) - P(mover
-  // loses), from the value head trained on game results — see
-  // formatOtterScore's definition). Feeds IntuitionPanel's plain signed
-  // number via OlympiadStatsPanel, AND the single White-perspective eval
+  // loses), from the value head trained on game results). Feeds
+  // IntuitionPanel's plain signed number via OlympiadStatsPanel, AND the
+  // single White-perspective eval
   // bar below (see otterWhiteScore near the `turn` derivation), by sign-
   // flipping it when Black is on move — same conversion /play uses,
   // rather than querying the position a second time with the other side
@@ -377,6 +377,14 @@ function OlympiadWatchPageInner() {
   // fresh inference lands. See /play's identical fix (winProbabilityTurn
   // in app/play/page.tsx) for the fuller writeup.
   const [winProbabilityTurn, setWinProbabilityTurn] = useState<'w' | 'b'>('w');
+  // The exact real-board FEN winProbability/winProbabilityTurn belong to,
+  // and the opposite-turn query's own reading + the FEN IT was computed
+  // against — see evaluateOtterOppositeSide and getOtterScoreFor's use of
+  // combineWhiteBlackScores below. Mirrors /play's identical state
+  // (app/play/page.tsx) for the same subtract-and-average eval formula.
+  const [winProbabilityFen, setWinProbabilityFen] = useState<string>('');
+  const [otterOppositeScore, setOtterOppositeScore] = useState<number | null>(null);
+  const [otterOppositeForFen, setOtterOppositeForFen] = useState<string>('');
   const [auxMovingPiece, setAuxMovingPiece] = useState('-');
   const [auxCapturedPiece, setAuxCapturedPiece] = useState('-');
   const [auxCheckProb, setAuxCheckProb] = useState('-');
@@ -521,6 +529,64 @@ function OlympiadWatchPageInner() {
   const clockToFraction = (clockSeconds: number | null) =>
     clockSeconds !== null ? Math.max(0, Math.min(1, clockSeconds / OLYMPIAD_CLOCK_BASE_SECONDS)) : OLYMPIAD_DEFAULT_CLOCK_FRACTION;
 
+  // The opposite-turn reading behind the eval bar's subtract-and-average
+  // formula (see combineWhiteBlackScores) — queries this SAME real
+  // position but with the other side hypothetically to move
+  // (withOppositeTurn just flips the FEN's active-color field), using the
+  // same game history otherwise. Fire-and-forget: it must never delay the
+  // move arrows/aux stats below, which only need runOtterInference's own
+  // query, and it can fail outright (the flipped arrangement can be
+  // illegal in its own right, e.g. it would leave the real mover in
+  // check) — in which case the bar just falls back to the plain sign-flip
+  // until a later, legal position gives it a fresh reading. Mirrors
+  // /play's identical evaluateOtterOppositeSide.
+  const evaluateOtterOppositeSide = async (realFen: string, history: string[], whiteElo: number, blackElo: number, clockFraction: number, currentSeq: number) => {
+    const oppositeFen = withOppositeTurn(realFen);
+    if (!oppositeFen || !otterWorkerRef.current) return;
+    let oc: Chess;
+    try {
+      oc = new Chess(oppositeFen);
+    } catch {
+      return;
+    }
+    try {
+      const boardData = boardToTensor(oc);
+      const canonicalHistory = passHistoryToOtter
+        ? history.map((move, i) => (i % 2 === 1 ? mirrorMove(move) : move))
+        : [];
+      const historyIds = new BigInt64Array(20);
+      const historyMask = new Uint8Array(20);
+      const windowMoves = canonicalHistory.slice(-20);
+      const startIdx = 20 - windowMoves.length;
+      for (let i = 0; i < windowMoves.length; i++) {
+        const token = historyMoveToIdRef.current[windowMoves[i]] || 0;
+        historyIds[startIdx + i] = BigInt(token);
+        historyMask[startIdx + i] = 1;
+      }
+
+      const oppIsWhiteTurn = oc.turn() === 'w';
+      const activeElo = eloToBucket(oppIsWhiteTurn ? whiteElo : blackElo);
+      const opponentElo = eloToBucket(oppIsWhiteTurn ? blackElo : whiteElo);
+
+      const { valuePred } = await callOtterWorker('live', {
+        board: boardData,
+        historyIds,
+        historyMask,
+        activeElo,
+        opponentElo,
+        tc: OLYMPIAD_TC_BUCKET,
+        clock: [clockFraction, 0.0],
+      }, true);
+
+      if (currentSeq !== lastInferenceSeqRef.current) return;
+      setOtterOppositeScore(valuePred as number);
+      setOtterOppositeForFen(realFen);
+    } catch {
+      // Illegal flipped arrangement, or the worker call failed — leave the
+      // bar on its plain-sign-flip fallback (see getOtterScoreFor).
+    }
+  };
+
   // Otter inference for the currently displayed position — adapted from
   // /play's runModelInference (app/play/page.tsx), with Analyze-mode's
   // rating-bracket/time-format sliders replaced by the focused game's real
@@ -567,12 +633,16 @@ function OlympiadWatchPageInner() {
 
       if (currentSeq !== lastInferenceSeqRef.current) return;
 
-      // Mover-relative reading (P(mover wins) - P(mover loses)) — the
-      // single White-perspective eval bar (see otterWhiteScore near the
-      // `turn` derivation) sign-flips this when Black is on move, the same
-      // conversion /play uses. No second, opposite-turn query needed.
+      // Mover-relative reading (P(mover wins) - P(mover loses)) — combined
+      // with the opposite-turn query below into the single White-
+      // perspective eval bar (see getOtterScoreFor near the `turn`
+      // derivation).
       setWinProbability(valuePred as number);
       setWinProbabilityTurn(c.turn());
+      setWinProbabilityFen(c.fen());
+
+      // Fire-and-forget, not awaited — see evaluateOtterOppositeSide.
+      evaluateOtterOppositeSide(c.fen(), history, whiteElo, blackElo, clockFraction, currentSeq);
 
       const isBlackTurn = c.turn() === 'b';
       const legalUcis = c.moves({ verbose: true }).map((m) => m.from + m.to + (m.promotion || ''));
@@ -777,12 +847,25 @@ function OlympiadWatchPageInner() {
   });
 
   const turn: 'w' | 'b' = boardFen.split(' ')[1] === 'b' ? 'b' : 'w';
-  // Single Stockfish-shaped eval bar: winProbability is already
-  // P(mover wins) - P(mover loses) (see its declaration above), so a sign
-  // flip to White's frame is the only conversion needed — same as /play's
-  // getOtterWhiteScore. Flips against winProbabilityTurn, not the live
-  // `turn` above — see winProbabilityTurn's declaration for why.
-  const otterWhiteScore = winProbabilityTurn === 'w' ? winProbability : -winProbability;
+  // Single Stockfish-shaped eval bar. Combines the real mover's reading
+  // with the opposite-turn query (see evaluateOtterOppositeSide) via
+  // combineWhiteBlackScores when that opposite reading is still fresh for
+  // the CURRENT real position (otterOppositeForFen matches
+  // winProbabilityFen); otherwise falls back to a plain sign-flip of the
+  // real reading alone. Flips against winProbabilityTurn, never the live
+  // `turn` above — see winProbabilityTurn's declaration for why. Mirrors
+  // /play's identical getOtterScoreFor.
+  const getOtterScoreFor = (side: 'w' | 'b'): number => {
+    const oppositeIsFresh = otterOppositeScore !== null && winProbabilityFen !== '' && otterOppositeForFen === winProbabilityFen;
+    if (!oppositeIsFresh) {
+      return winProbabilityTurn === side ? winProbability : -winProbability;
+    }
+    const whiteVal = winProbabilityTurn === 'w' ? winProbability : otterOppositeScore;
+    const blackVal = winProbabilityTurn === 'b' ? winProbability : otterOppositeScore;
+    const whiteScore = combineWhiteBlackScores(whiteVal, blackVal);
+    return side === 'w' ? whiteScore : -whiteScore;
+  };
+  const otterWhiteScore = getOtterScoreFor('w');
   const otterWinPct = Math.round(((otterWhiteScore + 1) / 2) * 100);
   // When the focused game's own tournament hasn't reported a real poll
   // timestamp yet (e.g. isDemo, or genuinely still loading), Date.now() is
@@ -861,7 +944,7 @@ function OlympiadWatchPageInner() {
               playedMove={!isExploring && nextPlayedMove ? { from: nextPlayedMove.from, to: nextPlayedMove.to } : null}
               onUserMove={handleUserMove}
               otterWinPct={otterWinPct}
-              otterScoreText={formatOtterScore(otterWhiteScore)}
+              otterWinPctText={`${otterWinPct}%`}
               stockfishEvalPct={stockfishEvalPct}
               whiteLabel={nameWithTitle(focusedGame.white, focusedGame.whiteTitle)}
               blackLabel={nameWithTitle(focusedGame.black, focusedGame.blackTitle)}

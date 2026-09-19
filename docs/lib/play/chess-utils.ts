@@ -190,16 +190,19 @@ export const formatSfPoints = (raw: number | undefined): string => {
   return (raw > 0 ? '+' : '') + (raw / 100).toFixed(2);
 };
 
-// Otter's value head, expressed in White's perspective (see
-// getOtterWhiteScore in page.tsx), formatted to look like formatSfPoints'
-// pawns-style pill text above — e.g. "+0.62" — rather than a win %. Unlike
-// Stockfish's centipawns this is always bounded to [-1, 1] (it's an
-// expected-score estimate, P(win) - P(loss), not a depth-searched
-// evaluation), so there's no mate-score case to handle here.
-export const formatOtterScore = (score: number | undefined): string => {
-  if (score === undefined) return '...';
-  return (score > 0 ? '+' : '') + score.toFixed(2);
-};
+// Combines two independent value-head readings of the SAME position — one
+// queried with White hypothetically to move, one with Black hypothetically
+// to move (see withOppositeTurn above) — into a single White-perspective
+// score. Each reading is already P(that side wins) - P(that side loses)
+// from its own queried side's perspective, so subtracting them and halving
+// (their difference spans [-2, 2]) folds both into one number back in
+// [-1, 1]. This isn't just cosmetic: Otter's value head isn't perfectly
+// consistent between the two turn-framings of the same position (confirmed
+// against real finished games — see /olympiad's former two-bar display),
+// so averaging the two readings cancels out some of that per-query noise
+// instead of trusting either single query alone.
+export const combineWhiteBlackScores = (whiteScore: number, blackScore: number): number =>
+  (whiteScore - blackScore) / 2;
 
 export const classifyDrop = (drop: number): { label: string; color: string } => {
   if (drop > 200) return { label: 'Blunder', color: '#F43F5E' };

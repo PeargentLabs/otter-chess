@@ -38,7 +38,7 @@ export default function MainBoard({
   sfTopMoves,
   playedMove,
   otterWinPct,
-  otterScoreText,
+  otterWinPctText,
   stockfishEvalPct,
   whiteLabel,
   blackLabel,
@@ -62,7 +62,7 @@ export default function MainBoard({
   // Single White-perspective eval bar, matching /play's BoardColumn — see
   // getOtterWhiteScore's derivation in page.tsx.
   otterWinPct: number;
-  otterScoreText: string;
+  otterWinPctText: string;
   stockfishEvalPct: number;
   whiteLabel: string;
   blackLabel: string;
@@ -349,8 +349,8 @@ export default function MainBoard({
         <EvalBar
           pct={otterWinPct}
           color="#7CB342"
-          text={otterScoreText}
-          title={`Otter eval: ${otterScoreText}`}
+          text={otterWinPctText}
+          title={`Otter win probability: ${otterWinPctText}`}
           isFlipped={isFlipped}
           isAnalyzeMode={true}
           boardPx={boardPx}

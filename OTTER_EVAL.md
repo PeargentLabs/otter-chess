@@ -53,86 +53,134 @@ White. It's re-evaluated after every move.
 
 ## The formula used in the web app
 
-Per move, [runModelInference](docs/app/play/page.tsx#L1923) (in `/play`) and
-[runOtterInference](docs/app/olympiad/watch/page.tsx) (in `/olympiad/watch`) call the
-model and record two things together:
+Both `/play` ([page.tsx](docs/app/play/page.tsx)) and `/olympiad/watch`
+([page.tsx](docs/app/olympiad/watch/page.tsx)) query the value head **twice** per
+position and combine the two readings, rather than trusting a single query:
+
+**1. Query the real mover.** `runModelInference`/`runOtterInference` call the model for
+the position as it actually stands, and record the value together with whose turn it
+was computed for:
 
 ```ts
 winProbability = valuePred          // the raw model output, in [-1, +1]
 winProbabilityTurn = c.turn()       // 'w' or 'b' — whose turn the queried position was
+winProbabilityFen = c.fen()         // the exact real position this reading belongs to
 ```
 
-**1. Flip to White's frame.** Since `winProbability` already equals
-`P(winProbabilityTurn's side wins) − P(winProbabilityTurn's side loses)`, getting a
-White-perspective, Stockfish-shaped score is just a sign flip — no second model query
-needed:
+**2. Query the opposite side, hypothetically.** `evaluateOtterOppositeSide` fires a
+second, fire-and-forget query against the *same* pieces but with the other side to move
+— `withOppositeTurn` just flips the FEN's active-color field, no pieces move. This can
+fail outright (the flipped arrangement can be illegal in its own right, e.g. it would
+leave the real mover in check), in which case it's simply skipped:
 
 ```ts
-otterWhiteScore = (winProbabilityTurn === 'w')
-  ? winProbability
-  : -winProbability
+otterOppositeScore   = <that query's raw output>
+otterOppositeForFen  = realFen   // which real position this opposite reading answers for
 ```
 
-`otterWhiteScore` is in `[-1, +1]`: positive means White is favored, negative means Black
-is favored, `0` means dead level (or drawish).
-
-**2. Bar fill %** (visual height of the colored region only):
+**3. Combine into a White-perspective score**, via
+[combineWhiteBlackScores](docs/lib/play/chess-utils.ts). Once both readings exist for the
+*same* real position (`otterOppositeForFen === winProbabilityFen`):
 
 ```ts
-otterWinPct = round(((otterWhiteScore + 1) / 2) * 100)
+export const combineWhiteBlackScores = (whiteScore: number, blackScore: number): number =>
+  (whiteScore - blackScore) / 2;
 ```
 
-**3. Pill text**, via [formatOtterScore](docs/lib/play/chess-utils.ts):
+Each of `whiteScore`/`blackScore` is already `P(that side wins) − P(that side loses)`
+from its own queried perspective, so subtracting them and halving (their difference
+spans `[-2, 2]`) folds both into one number back in `[-1, +1]`: positive means White is
+favored, negative means Black is favored, `0` means dead level (or drawish).
+
+This isn't just cosmetic — it's an ensembling trick. Otter's value head isn't perfectly
+consistent between the two turn-framings of the same position (confirmed against real
+finished games — see the history note below), so averaging the two readings cancels out
+some of that per-query noise instead of trusting either single query alone.
+
+**Fallback**: until the opposite query resolves for the current position (or if it fails
+on an illegal flipped arrangement), the bar falls back to the plain sign-flip of the real
+reading alone — `winProbabilityTurn === 'w' ? winProbability : -winProbability` — so it's
+never blank.
+
+**4. Bar fill % and pill text — both shown as White's win probability**, not the raw
+signed score:
 
 ```ts
-export const formatOtterScore = (score: number | undefined): string => {
-  if (score === undefined) return '...';
-  return (score > 0 ? '+' : '') + score.toFixed(2);
-};
+otterWinPct = round(((otterWhiteScore + 1) / 2) * 100)   // both the bar's fill % and its pill text, e.g. "62%"
 ```
 
-e.g. `+0.42`, `-0.17`, `0.00` — the same pill-text convention as Stockfish's own bar
-(`formatSfPoints`), so the two bars read the same way at a glance.
+Since `otterWhiteScore` already equals `P(White wins) − P(Black wins)`, this recovers the
+classical win-probability convention where a draw counts as half a win:
+`(score + 1) / 2 = P(White wins) + P(draw) / 2`. `50%` means dead level (or drawish);
+higher favors White, lower favors Black. Unlike Stockfish's bar (which shows the raw
+centipawn score as its pill text, e.g. `+0.62`), Otter's pill intentionally shows the
+probability-style number instead of the raw `[-1, +1]` score, since that reads more
+naturally as "how likely is White to win" — the raw score is still there internally
+(`otterWhiteScore`), just not surfaced as pill text.
 
-### Why `winProbabilityTurn`, not the live board turn
+### Converting the percentage back to a signed eval
 
-`runModelInference`/`runOtterInference` are async. A move can be applied to the board
-(flipping whose turn it is) before that move's own inference call resolves. If the flip
-in step 1 read the board's *current* turn instead of the turn the value was actually
-computed for, there's a window where a stale `winProbability` (computed for the mover
-who just moved) gets flipped as if it belonged to the *new* mover — inverting the sign
-and showing the wrong side as winning until the fresh inference lands. This was most
-visible in `/play`'s Automated Otter Game Loop, where moves land back-to-back fast enough
-that the flash barely settles between them. Recording `winProbabilityTurn` alongside
-`winProbability` at the exact moment it's set closes that gap.
+The displayed `otterWinPct` is centered on `50`, not `0` — `50%` means dead level, not
+`0%`. To get a signed, zero-centered number back out of it (positive = White favored,
+negative = Black favored, `0` = level/drawish), subtract `50`:
 
-## `/olympiad/watch`'s single bar vs. its old two-bar design
+```ts
+signedEval = otterWinPct - 50   // e.g. 62% -> +12, 38% -> -12, 50% -> 0
+```
 
-`/olympiad/watch` used to show **two independent Otter bars** instead of one: one from
-querying the position with White to move, one from querying it with Black to move (via
-`withOppositeTurn`, flipping the FEN's active-color field). That existed because Otter's
-value head isn't fully self-consistent between those two framings of the same real
-position — confirmed by direct testing against finished games — so showing both readings
-side by side was an intentional way of surfacing that disagreement rather than hiding it.
+That recovers (up to rounding) the original `[-1, +1]` score on a `[-50, +50]` scale,
+since `otterWinPct = ((otterWhiteScore + 1) / 2) * 100` rearranges to:
 
-The current single-bar version (matching `/play`) trades that away for a
-Stockfish-shaped display: it only ever queries the position once, from whoever is
-actually on move, and sign-flips that one reading. It no longer surfaces the two-framing
-disagreement — if that matters again, the two-bar/`withOppositeTurn` code is recoverable
-from git history.
+```text
+otterWinPct - 50 = 50 * otterWhiteScore
+```
+
+So:
+
+- `otterWinPct - 50 > 0` → White is favored (equivalently, `otterWinPct > 50`)
+- `otterWinPct - 50 < 0` → Black is favored (equivalently, `otterWinPct < 50`)
+- `otterWinPct - 50 = 0` → dead level, or drawish (`otterWinPct = 50`)
+
+Dividing that result by `50` (`(otterWinPct - 50) / 50`) recovers `otterWhiteScore`
+itself, back on the model's native `[-1, +1]` scale — useful if you need the un-rounded,
+un-rescaled signed score rather than the display-friendly `±50`-scale version.
+
+### Why `winProbabilityTurn`/`winProbabilityFen`, not the live board turn
+
+Both inference calls are async. A move can be applied to the board (flipping whose turn
+it is) before that move's own inference call resolves. If step 3's flip read the board's
+*current* turn instead of the turn each value was actually computed for, there's a
+window where a stale reading (computed for the mover who just moved) gets flipped as if
+it belonged to the *new* mover — inverting the sign and showing the wrong side as winning
+until the fresh inference lands. This was most visible in `/play`'s Automated Otter Game
+Loop, where moves land back-to-back fast enough that the flash barely settles between
+them. Recording `winProbabilityTurn`/`winProbabilityFen` alongside each value at the
+exact moment it's set closes that gap, and the FEN match additionally guards the
+opposite-turn combine step against mixing readings from two different positions.
+
+### History: `/olympiad/watch`'s old two-bar design
+
+`/olympiad/watch` originally showed the two readings above as **two separate bars**
+instead of combining them — one labeled "queried as White to move", one "queried as
+Black to move" — specifically to surface the two-framing disagreement rather than hide
+it. The current combined single bar (matching `/play`, and using the same
+subtract-and-average formula) folds both readings into one number instead. The
+`withOppositeTurn`-based two-bar rendering code is recoverable from git history if that
+disagreement ever needs to be surfaced on its own again.
 
 ## How this differs from Stockfish's evaluation
 
 |                        | Otter                                              | Stockfish                                  |
 |------------------------|-----------------------------------------------------|---------------------------------------------|
 | Source                 | Neural net trained on how human games ended        | Depth-limited engine search                |
-| Unit                   | Expected score, bounded to `[-1, +1]`              | Centipawns, or mate-in-N (unbounded)        |
+| Unit                   | Win probability (`0–100%`), from an expected score bounded to `[-1, +1]` | Centipawns, or mate-in-N (unbounded) |
 | Depends on rating/clock? | **Yes** — Elo and time control are model inputs  | No — objective given the position           |
-| Looks ahead?           | No — reads the position once                       | Yes — searches many plies deep              |
-| Draws                  | Folded into the same axis as win/loss (scored `0`) | N/A — reports the position's objective value |
+| Looks ahead?           | No — reads the (static) position, twice each move  | Yes — searches many plies deep              |
+| Draws                  | Folded into the same axis as win/loss (a draw counts as half a win) | N/A — reports the position's objective value |
 
-Formatting the two bars the same way (signed score, same pill style) makes them visually
-comparable, but they are still answering different questions:
+The two bars are laid out the same way but read differently — Otter's pill shows a win
+probability (`62%`), Stockfish's shows a raw centipawn score (`+0.62`) — which is
+intentional given they're answering different questions:
 
 - Stockfish: *"Who is objectively better here, and by how much?"*
 - Otter: *"At this rating and time control, how do games from this exact position tend to
